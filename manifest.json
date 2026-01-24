@@ -1,0 +1,10 @@
+{
+	"id": "codexian",
+	"name": "Codexian",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "An embedded agent for Obsidian powered by OpenAI Codex.",
+	"author": "simon1uo",
+	"authorUrl": "https://github.com/simon1uo",
+	"isDesktopOnly": false
+}
