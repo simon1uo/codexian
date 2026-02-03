@@ -1,8 +1,403 @@
-/*
+.codexian-view {
+  height: 100%;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.codexian-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 12px;
+  gap: 12px;
+}
 
-If your plugin does not need CSS, delete this file.
+.codexian-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 
-*/
+.codexian-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.codexian-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.95em;
+}
+
+.codexian-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.codexian-action-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.codexian-action-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.codexian-icon-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.codexian-icon-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.codexian-dropdown-btn {
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+
+.codexian-title {
+  font-size: 1.1em;
+  font-weight: 600;
+}
+
+.codexian-status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.codexian-status {
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.codexian-status-running {
+  color: var(--text-accent);
+}
+
+.codexian-status-error {
+  color: var(--text-error);
+}
+
+.codexian-transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.codexian-message {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 85%;
+  position: relative;
+}
+
+.codexian-user {
+  align-self: flex-end;
+}
+
+.codexian-assistant {
+  align-self: flex-start;
+}
+
+.codexian-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.codexian-message:hover .codexian-copy {
+  opacity: 1;
+}
+
+.codexian-copy:hover {
+  color: var(--text-normal);
+  border-color: var(--text-accent);
+}
+
+.codexian-copy-success::after {
+  content: 'Copied';
+  position: absolute;
+  top: -22px;
+  right: 0;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 0.75em;
+  white-space: nowrap;
+}
+
+.codexian-copy-fail::after {
+  content: 'Copy failed';
+  position: absolute;
+  top: -22px;
+  right: 0;
+  background: var(--background-secondary);
+  color: var(--text-error);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 0.75em;
+  white-space: nowrap;
+}
+
+.codexian-message-content {
+  white-space: pre-wrap;
+}
+
+.codexian-message-bubble {
+  padding: 10px;
+  border-radius: 10px;
+  background: transparent;
+  border: none;
+}
+
+.codexian-user .codexian-message-bubble {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.codexian-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 8px;
+}
+
+.codexian-session-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  transition: background 0.15s ease;
+}
+
+.codexian-session-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.codexian-session-title {
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.codexian-session-meta {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.codexian-session-actions {
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.codexian-session-row:hover .codexian-session-actions {
+  opacity: 1;
+}
+
+.codexian-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.codexian-input-container {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 16px;
+  padding: 10px 12px 8px;
+  background: var(--background-secondary);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.codexian-input-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px;
+  flex-wrap: nowrap;
+}
+
+.codexian-input-toolbar-top {
+  border-bottom: none;
+  padding-bottom: 2px;
+}
+
+.codexian-input-toolbar-bottom {
+  border-top: none;
+  padding-top: 2px;
+}
+
+.codexian-toolbar-left,
+.codexian-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.codexian-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.codexian-model-select {
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  font-size: 0.85em;
+  min-width: 0;
+  max-width: 200px;
+  flex: 1 1 auto;
+}
+
+.codexian-effort-select {
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  font-size: 0.85em;
+  min-width: 0;
+  max-width: 160px;
+  flex: 1 1 auto;
+}
+
+.codexian-input {
+  flex: 1;
+  min-height: 56px;
+  resize: none;
+  padding: 6px 6px 4px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-normal);
+  font-size: 0.95em;
+  line-height: 1.4;
+  cursor: text;
+}
+
+.codexian-input-full {
+  width: 100%;
+}
+
+.codexian-input::placeholder {
+  color: var(--text-muted);
+}
+
+.codexian-input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.codexian-input:active {
+  outline: none;
+  box-shadow: none;
+}
+
+.codexian-send {
+  width: 32px;
+  height: 32px;
+  border-radius: 16px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.codexian-send:not(:disabled) {
+  cursor: pointer;
+}
+
+.codexian-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.codexian-send svg {
+  width: 16px;
+  height: 16px;
+}
+
+.codexian-sending {
+  opacity: 0.8;
+}
+
+.codexian-copy-textarea {
+  position: fixed;
+  opacity: 0;
+}
+
+
+.codexian-input-hint {
+  font-size: 0.8em;
+  color: var(--text-muted);
+  min-height: 16px;
+}
+
+.codexian-session-search {
+  margin-top: 8px;
+}
+
+.codexian-session-search-input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
