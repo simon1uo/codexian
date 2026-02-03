@@ -1,99 +1,279 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {CodexianSettings, DEFAULT_SETTINGS, CodexianSettingTab} from "./settings";
+import { Plugin } from 'obsidian';
 
-// Remember to rename these classes and interfaces!
+import { CodexRuntime } from './core/runtime';
+import { SessionStorage } from './core/storage';
+import type {
+  AppServerThread,
+  ChatMessage,
+  CodexianConversation,
+  CodexianData,
+  CodexianSettings,
+} from './core/types';
+import { CodexianSettingTab, DEFAULT_SETTINGS } from './features/settings/CodexianSettings';
+import { CodexianView, VIEW_TYPE_CODEXIAN } from './features/chat/CodexianView';
 
 export default class CodexianPlugin extends Plugin {
-	settings: CodexianSettings;
+  settings: CodexianSettings;
+  runtime: CodexRuntime;
+  private storage: SessionStorage;
+  private activeConversationId: string | null = null;
+  private conversation: CodexianConversation | null = null;
 
-	async onload() {
-		await this.loadSettings();
+  onload(): void {
+    void this.loadSettings()
+      .then(() => {
+      this.storage = new SessionStorage(this.app.vault.adapter);
+      this.runtime = new CodexRuntime(this.settings, this.getVaultPath());
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
+      this.registerView(
+        VIEW_TYPE_CODEXIAN,
+        (leaf) => new CodexianView(leaf, this)
+      );
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+      this.addRibbonIcon('bot', 'Open codexian', () => {
+        void this.activateView();
+      });
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new CodexianModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new CodexianModal(this.app).open();
-					}
+      this.addCommand({
+        id: 'open',
+        name: 'Open',
+        callback: () => {
+          void this.activateView();
+        },
+      });
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
+      const statusBarItem = this.addStatusBarItem();
+      statusBarItem.setText('Codexian');
+      statusBarItem.addEventListener('click', () => {
+        void this.activateView();
+      });
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new CodexianSettingTab(this.app, this));
+      this.addSettingTab(new CodexianSettingTab(this.app, this));
+      })
+      .catch((error) => {
+        console.error('Failed to load Codexian settings', error);
+      });
+  }
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
+  onunload(): void {
+    void this.runtime.shutdown();
+  }
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		
+  async loadSettings(): Promise<void> {
+    const data = (await this.loadData()) as Partial<CodexianData> | undefined;
+    const loadedSettings = data?.settings ?? (data as Partial<CodexianSettings> | undefined);
 
-	}
+    this.settings = {
+      ...DEFAULT_SETTINGS,
+      ...(loadedSettings ?? {}),
+    };
+    this.settings.envSnippets ??= [];
+    this.activeConversationId = data?.activeConversationId ?? null;
+  }
 
-	onunload() {
-	}
+  async saveSettings(): Promise<void> {
+    const data: CodexianData = {
+      settings: this.settings,
+      activeConversationId: this.activeConversationId ?? undefined,
+    };
+    await this.saveData(data);
+  }
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<CodexianSettings>);
-	}
+  async activateView(): Promise<void> {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(VIEW_TYPE_CODEXIAN)[0];
 
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
+    if (!leaf) {
+      const rightLeaf = workspace.getRightLeaf(false);
+      if (rightLeaf) {
+        await rightLeaf.setViewState({
+          type: VIEW_TYPE_CODEXIAN,
+          active: true,
+        });
+        leaf = rightLeaf;
+      }
+    }
 
-class CodexianModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+    if (leaf) {
+      await workspace.revealLeaf(leaf);
+    }
+  }
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
+  async getConversation(): Promise<CodexianConversation> {
+    if (this.conversation) {
+      return this.conversation;
+    }
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
+    const thread = await this.runtime.startThread();
+    const conversation = this.buildConversationFromThread(thread);
+    this.conversation = conversation;
+    this.activeConversationId = conversation.id;
+    await this.saveSettings();
+    await this.storage.saveConversation(conversation);
+    return conversation;
+  }
+
+  async loadConversationFromThread(threadId: string): Promise<CodexianConversation> {
+    const thread = await this.runtime.resumeThread(threadId);
+    const baseConversation = this.buildConversationFromThread(thread);
+    const local = await this.storage.loadConversation(threadId);
+    const conversation = this.mergeConversation(baseConversation, local);
+    this.conversation = conversation;
+    this.activeConversationId = conversation.id;
+    await this.saveSettings();
+    await this.storage.saveConversation(conversation);
+    return conversation;
+  }
+
+  async saveConversation(conversation: CodexianConversation): Promise<void> {
+    this.conversation = conversation;
+    const defaultsApplied = this.applyConversationDefaults(conversation);
+    const settingsSynced = this.syncLastSelections(conversation);
+    const shouldSaveSettings = defaultsApplied || settingsSynced;
+    if (this.activeConversationId !== conversation.id) {
+      this.activeConversationId = conversation.id;
+      await this.saveSettings();
+    } else if (shouldSaveSettings) {
+      await this.saveSettings();
+    }
+    await this.storage.saveConversation(conversation);
+  }
+
+  async getLocalConversation(threadId: string): Promise<CodexianConversation | null> {
+    return this.storage.loadConversation(threadId);
+  }
+
+  createConversationFromThread(thread: AppServerThread): CodexianConversation {
+    return this.buildConversationFromThread(thread);
+  }
+
+  createMessageId(): string {
+    return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  private buildConversationFromThread(thread: AppServerThread): CodexianConversation {
+    const now = Date.now();
+    const createdAt = typeof thread.createdAt === 'number' ? thread.createdAt * 1000 : now;
+    const updatedAt = typeof thread.updatedAt === 'number' ? thread.updatedAt * 1000 : now;
+    const messages = this.buildMessagesFromThread(thread);
+
+    return {
+      id: thread.id,
+      threadId: thread.id,
+      title: thread.preview || 'Codexian Session',
+      model: undefined,
+      mode: undefined,
+      createdAt,
+      updatedAt,
+      lastResponseAt: updatedAt,
+      messages,
+    };
+  }
+
+  private mergeConversation(
+    base: CodexianConversation,
+    local: CodexianConversation | null
+  ): CodexianConversation {
+    if (!local) {
+      return base;
+    }
+
+    const preferredTitle =
+      local.title && local.title !== 'Codexian Session' ? local.title : base.title;
+    const mergedUpdatedAt = Math.max(base.updatedAt, local.updatedAt ?? 0);
+
+    return {
+      ...base,
+      title: preferredTitle,
+      model: local.model ?? base.model,
+      reasoningEffort: local.reasoningEffort ?? base.reasoningEffort,
+      mode: local.mode ?? base.mode,
+      createdAt: local.createdAt ?? base.createdAt,
+      updatedAt: mergedUpdatedAt || base.updatedAt,
+      lastResponseAt: local.lastResponseAt ?? base.lastResponseAt,
+    };
+  }
+
+  private buildMessagesFromThread(thread: AppServerThread): ChatMessage[] {
+    const turns = thread.turns ?? [];
+    const messages: ChatMessage[] = [];
+    let offset = 0;
+
+    for (const turn of turns) {
+      const items = turn.items ?? [];
+      for (const item of items) {
+        if (item.type === 'userMessage') {
+          const content = item.content ?? [];
+          const text = content
+            .filter((input) => input.type === 'text')
+            .map((input) => input.text ?? '')
+            .join('\n');
+          if (!text) continue;
+          messages.push({
+            id: item.id ?? this.createMessageId(),
+            role: 'user',
+            content: text,
+            timestamp: Date.now() + offset++,
+          });
+        }
+
+        if (item.type === 'agentMessage' && typeof item.text === 'string') {
+          messages.push({
+            id: item.id ?? this.createMessageId(),
+            role: 'assistant',
+            content: item.text,
+            timestamp: Date.now() + offset++,
+          });
+        }
+      }
+    }
+
+    return messages;
+  }
+
+  private applyConversationDefaults(conversation: CodexianConversation): boolean {
+    let changed = false;
+    if (!conversation.mode && this.settings.lastMode) {
+      conversation.mode = this.settings.lastMode;
+      changed = true;
+    }
+    if (!conversation.model && this.settings.lastModel) {
+      conversation.model = this.settings.lastModel;
+      changed = true;
+    }
+    if (!conversation.reasoningEffort && this.settings.lastReasoningEffort) {
+      conversation.reasoningEffort = this.settings.lastReasoningEffort;
+      changed = true;
+    }
+    return changed;
+  }
+
+  private syncLastSelections(conversation: CodexianConversation): boolean {
+    let changed = false;
+    if (conversation.mode && conversation.mode !== this.settings.lastMode) {
+      this.settings.lastMode = conversation.mode;
+      changed = true;
+    }
+    if (conversation.model && conversation.model !== this.settings.lastModel) {
+      this.settings.lastModel = conversation.model;
+      changed = true;
+    }
+    if (
+      conversation.reasoningEffort &&
+      conversation.reasoningEffort !== this.settings.lastReasoningEffort
+    ) {
+      this.settings.lastReasoningEffort = conversation.reasoningEffort;
+      changed = true;
+    }
+    return changed;
+  }
+
+  private getVaultPath(): string {
+    const adapter = this.app.vault.adapter as { basePath?: string };
+    return adapter.basePath ?? '';
+  }
+
+  getVaultPathForFilter(): string {
+    return this.getVaultPath();
+  }
 }
