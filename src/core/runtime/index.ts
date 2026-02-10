@@ -7,10 +7,13 @@ import * as readline from 'readline';
 import { parseEnvVariables } from '../../utils/env';
 import { ApprovalManager } from '../security/ApprovalManager';
 import type {
+  ApprovalDecision,
   ApprovalPolicy,
-  AppServerMessageItem,
+  AppServerAgentMessage,
+  AppServerItem,
   AppServerTextContent,
   AppServerThread,
+  AppServerUnknownItemType,
   CodexianSettings,
   SandboxPolicy,
 } from '../types';
@@ -19,6 +22,8 @@ export interface CodexRunHandlers {
   onStart: (turnId: string) => void;
   onDelta: (delta: string) => void;
   onMessage: (message: string) => void;
+  onItemStarted?: (item: AppServerItem) => void;
+  onItemCompleted?: (item: AppServerItem) => void;
   onError: (message: string) => void;
   onComplete: () => void;
 }
@@ -60,6 +65,37 @@ const getNumber = (value: unknown): number | undefined =>
 
 const getArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
+const normalizeApprovalDecision = (decision: ApprovalDecision | 'approve'): ApprovalDecision =>
+  decision === 'approve' ? 'accept' : decision;
+
+const isAgentMessageItem = (item: AppServerItem): item is AppServerAgentMessage => item.type === 'agentMessage';
+
+const parseAppServerItem = (value: unknown): AppServerItem | null => {
+  if (!isRecord(value)) return null;
+  const type = getString(value.type);
+  if (!type) return null;
+
+  if (type === 'userMessage') {
+    const content = getArray(value.content)
+      .map((contentItem) => {
+        if (!isRecord(contentItem)) return null;
+        const contentType = getString(contentItem.type);
+        if (contentType !== 'text') return null;
+        const text = getString(contentItem.text);
+        if (text === undefined) return { type: 'text' };
+        return { type: 'text', text };
+      })
+      .filter((entry): entry is AppServerTextContent => !!entry);
+    return { type: 'userMessage', id: getString(value.id), content };
+  }
+
+  if (type === 'agentMessage') {
+    return { type: 'agentMessage', id: getString(value.id), text: getString(value.text) };
+  }
+
+  return { type: type as AppServerUnknownItemType, id: getString(value.id), raw: value };
+};
+
 const safeJsonParse = (value: string): unknown => {
   try {
     return JSON.parse(value) as unknown;
@@ -81,25 +117,9 @@ const parseThread = (value: unknown): AppServerThread | null => {
     path: getString(value.path),
     turns: getArray(value.turns).map((turn) => {
       if (!isRecord(turn)) return {};
-      const items = getArray(turn.items).map((item) => {
-        if (!isRecord(item)) return null;
-        const type = getString(item.type);
-        if (type === 'userMessage') {
-          const content = getArray(item.content).map((contentItem) => {
-            if (!isRecord(contentItem)) return null;
-            const contentType = getString(contentItem.type);
-            if (contentType !== 'text') return null;
-            const text = getString(contentItem.text);
-            if (text === undefined) return { type: 'text' };
-            return { type: 'text', text };
-          }).filter((entry): entry is AppServerTextContent => !!entry);
-          return { type, id: getString(item.id), content } as AppServerMessageItem;
-        }
-        if (type === 'agentMessage') {
-          return { type, id: getString(item.id), text: getString(item.text) } as AppServerMessageItem;
-        }
-        return null;
-      }).filter((entry): entry is AppServerMessageItem => !!entry);
+      const items = getArray(turn.items)
+        .map((item) => parseAppServerItem(item))
+        .filter((entry): entry is AppServerItem => !!entry);
       return { items };
     }),
   };
@@ -419,20 +439,21 @@ class AppServerClient {
     if (!this.child) return;
 
     if (method === 'item/commandExecution/requestApproval') {
-      const decision = this.approvalManager.decideTool();
+      const decision = normalizeApprovalDecision(this.approvalManager.decideTool() as ApprovalDecision | 'approve');
       const response: JsonRpcResponse = { id, result: { decision } };
       this.child.stdin.write(`${JSON.stringify(response)}\n`);
       return;
     }
 
     if (method === 'item/fileChange/requestApproval') {
-      const decision = this.approvalManager.decideFileChange();
+      const decision = normalizeApprovalDecision(this.approvalManager.decideFileChange() as ApprovalDecision | 'approve');
       const response: JsonRpcResponse = { id, result: { decision } };
       this.child.stdin.write(`${JSON.stringify(response)}\n`);
       return;
     }
 
-    if (method === 'item/tool/requestUserInput') {
+    if (method === 'tool/requestUserInput' || method === 'item/tool/requestUserInput') {
+      // TODO: Wire this server user-input request into the chat UI when input prompts are supported.
       const response: JsonRpcResponse = { id, result: { answers: {} } };
       this.child.stdin.write(`${JSON.stringify(response)}\n`);
       return;
@@ -560,6 +581,8 @@ export class CodexRuntime {
 
     let turnId = '';
     const buffered: JsonRpcNotification[] = [];
+    const onItemStarted = handlers.onItemStarted ?? (() => undefined);
+    const onItemCompleted = handlers.onItemCompleted ?? (() => undefined);
     const handleNotification = (notification: JsonRpcNotification): void => {
       const { method, params } = notification;
       const paramsRecord = isRecord(params) ? params : undefined;
@@ -582,13 +605,24 @@ export class CodexRuntime {
       if (method === 'item/completed') {
         const eventTurnId = getString(paramsRecord?.turnId);
         if (eventTurnId !== turnId) return;
-        const item = isRecord(paramsRecord?.item) ? paramsRecord?.item : undefined;
-        if (getString(item?.type) === 'agentMessage') {
-          const text = getString(item?.text);
+        const item = parseAppServerItem(paramsRecord?.item);
+        if (!item) return;
+        onItemCompleted(item);
+        if (isAgentMessageItem(item)) {
+          const text = item.text;
           if (text) {
             handlers.onMessage(text);
           }
         }
+        return;
+      }
+
+      if (method === 'item/started') {
+        const eventTurnId = getString(paramsRecord?.turnId);
+        if (eventTurnId !== turnId) return;
+        const item = parseAppServerItem(paramsRecord?.item);
+        if (!item) return;
+        onItemStarted(item);
         return;
       }
 

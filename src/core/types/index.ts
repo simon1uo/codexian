@@ -33,6 +33,16 @@ export interface CodexianConversation {
   updatedAt: number;
   lastResponseAt?: number;
   messages: ChatMessage[];
+  items?: CodexianConversationItem[];
+}
+
+export interface CodexianConversationItem {
+  threadId?: string;
+  turnId?: string;
+  itemId?: string;
+  itemType: string;
+  timestamp: number;
+  item: unknown;
 }
 
 export type CodexianMode = 'agent' | 'chat' | 'agent-full';
@@ -54,29 +64,46 @@ export interface EnvSnippet {
 
 export type ApprovalMode = 'safe' | 'yolo';
 
-export type ApprovalDecision = 'approve' | 'decline';
+export type ApprovalDecision = 'accept' | 'decline';
 
 export interface AppServerTextContent {
   type: 'text';
   text?: string;
 }
 
-export interface AppServerUserMessage {
-  type: 'userMessage';
-  id?: string;
+export interface AppServerUserMessage extends AppServerItemBase<'userMessage'> {
   content?: AppServerTextContent[];
 }
 
-export interface AppServerAgentMessage {
-  type: 'agentMessage';
-  id?: string;
+export interface AppServerAgentMessage extends AppServerItemBase<'agentMessage'> {
   text?: string;
 }
 
-export type AppServerMessageItem = AppServerUserMessage | AppServerAgentMessage;
+type Exclude<T, U> = T extends U ? never : T;
+
+export type AppServerKnownItemType = 'userMessage' | 'agentMessage';
+
+declare const appServerUnknownItemBrand: unique symbol;
+
+export type AppServerUnknownItemType = Exclude<string, AppServerKnownItemType> & {
+  readonly [appServerUnknownItemBrand]: true;
+};
+
+export interface AppServerItemBase<TType extends string = string> {
+  id?: string;
+  type: TType;
+  content?: AppServerTextContent[];
+  text?: string;
+}
+
+export interface AppServerUnknownItem extends AppServerItemBase<AppServerUnknownItemType> {
+  raw: { [key: string]: unknown };
+}
+
+export type AppServerItem = AppServerUserMessage | AppServerAgentMessage | AppServerUnknownItem;
 
 export interface AppServerTurn {
-  items?: AppServerMessageItem[];
+  items?: AppServerItem[];
 }
 
 export interface AppServerThread {

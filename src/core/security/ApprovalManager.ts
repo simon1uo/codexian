@@ -4,10 +4,10 @@ export class ApprovalManager {
   constructor(private mode: ApprovalMode) {}
 
   decideTool(): ApprovalDecision {
-    return this.mode === 'yolo' ? 'approve' : 'decline';
+    return this.mode === 'yolo' ? 'accept' : 'decline';
   }
 
   decideFileChange(): ApprovalDecision {
-    return this.mode === 'yolo' ? 'approve' : 'decline';
+    return this.mode === 'yolo' ? 'accept' : 'decline';
   }
 }

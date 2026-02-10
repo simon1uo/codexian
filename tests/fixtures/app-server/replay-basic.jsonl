@@ -1,0 +1,10 @@
+{"id":1,"result":{}}
+{"id":2,"result":{"thread":{"id":"thread-replay","createdAt":1735689600,"updatedAt":1735689601,"turns":[]}}}
+{"method":"item/started","params":{"turnId":"turn-replay","item":{"id":"item-1","type":"agentMessage"}}}
+{"method":"item/started","params":{"turnId":"turn-replay","item":{"id":"item-plan-1","type":"plan","title":"Draft response"}}}
+{"method":"item/agentMessage/delta","params":{"turnId":"turn-replay","delta":"Hello"}}
+{"method":"item/agentMessage/delta","params":{"turnId":"turn-replay","delta":" world"}}
+{"method":"item/completed","params":{"turnId":"turn-replay","item":{"id":"item-plan-1","type":"plan","title":"Draft response","steps":["outline","finalize"]}}}
+{"method":"item/completed","params":{"turnId":"turn-replay","item":{"id":"item-1","type":"agentMessage","text":"Hello world"}}}
+{"method":"turn/completed","params":{"turn":{"id":"turn-replay","status":"completed"}}}
+{"id":3,"result":{"turn":{"id":"turn-replay"}}}

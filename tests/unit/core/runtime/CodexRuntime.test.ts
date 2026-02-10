@@ -136,4 +136,54 @@ describe('CodexRuntime', () => {
     const approvalResponse = parseClientMessages(fake.writes).find((entry) => entry.id === 77);
     expect(approvalResponse).toMatchObject({ id: 77, result: { decision: 'decline' } });
   });
+
+  it('responds to server approval request with accept in yolo mode', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('yolo'), '/vault');
+    const readyPromise = runtime.ensureReady();
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    fake.stdout.write(
+      `${JSON.stringify({ id: 78, method: 'item/fileChange/requestApproval', params: { files: ['a.txt'] } })}\n`
+    );
+
+    await waitFor(() =>
+      parseClientMessages(fake.writes).some(
+        (entry) => entry.id === 78 && (entry.result as { decision?: string } | undefined)?.decision === 'accept'
+      )
+    );
+
+    const approvalResponse = parseClientMessages(fake.writes).find((entry) => entry.id === 78);
+    expect(approvalResponse).toMatchObject({ id: 78, result: { decision: 'accept' } });
+  });
+
+  it('supports tool/requestUserInput by returning empty answers', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('safe'), '/vault');
+    const readyPromise = runtime.ensureReady();
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    fake.stdout.write(
+      `${JSON.stringify({ id: 79, method: 'tool/requestUserInput', params: { schema: { prompt: 'x' } } })}\n`
+    );
+
+    await waitFor(() =>
+      parseClientMessages(fake.writes).some(
+        (entry) => entry.id === 79 && (entry.result as { answers?: Record<string, unknown> } | undefined)?.answers
+      )
+    );
+
+    const userInputResponse = parseClientMessages(fake.writes).find((entry) => entry.id === 79);
+    expect(userInputResponse).toMatchObject({ id: 79, result: { answers: {} } });
+  });
 });
