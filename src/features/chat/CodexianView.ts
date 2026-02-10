@@ -1,6 +1,6 @@
 import * as path from 'path';
 import type { WorkspaceLeaf } from 'obsidian';
-import { ItemView, MarkdownRenderer, Menu, Modal, Notice, Setting } from 'obsidian';
+import { ItemView, MarkdownRenderer, MarkdownView, Menu, Modal, Notice, Setting, TFile } from 'obsidian';
 
 import type CodexianPlugin from '../../main';
 import type { AppServerModel, ApprovalRequest, ApprovalRequestDecision } from '../../core/runtime';
@@ -21,6 +21,8 @@ import { createIconButton } from '../../shared/components/iconButton';
 import { setIcon } from '../../shared/icons';
 import { ConversationController } from './controllers/ConversationController';
 import { DEFAULT_CHAT_STATE, type ChatState } from './state/ChatState';
+import { buildPromptWithContext } from './context/PromptContext';
+import { applyMention, extractMentionedPaths, getMentionState } from '../../shared/mention/MentionHelpers';
 
 export const VIEW_TYPE_CODEXIAN = 'codexian-view';
 
@@ -49,6 +51,15 @@ const MODE_OPTIONS: Array<{
     sandboxPolicy: { type: 'dangerFullAccess' },
   },
 ];
+
+const PROMPT_CONTEXT_LIMITS = {
+  maxActiveFileChars: 6000,
+  maxSelectionChars: 2000,
+  maxMentionedFiles: 5,
+  maxMentionedFileChars: 4000,
+} as const;
+
+const MENTION_SUGGESTION_LIMIT = 8;
 
 class SessionManagerModal extends Modal {
   private plugin: CodexianPlugin;
@@ -238,6 +249,9 @@ export class CodexianView extends ItemView {
   private renderer: MessageRenderer | null = null;
   private itemCardRenderer: ItemCardRenderer | null = null;
   private conversationController: ConversationController;
+  private mentionDropdownEl: HTMLDivElement | null = null;
+  private mentionOptions: string[] = [];
+  private mentionSelectedIndex = 0;
   private pendingApprovals = new Set<{
     resolve: (decision: ApprovalRequestDecision) => void;
     cardEl: HTMLElement;
@@ -288,6 +302,8 @@ export class CodexianView extends ItemView {
       cls: 'codexian-input',
       attr: { placeholder: 'Ask codex anything.' },
     });
+    this.mentionDropdownEl = inputRow.createDiv({ cls: 'codexian-mention-dropdown' });
+    this.mentionDropdownEl.hide();
 
     const bottomToolbar = inputContainer.createDiv({ cls: 'codexian-input-toolbar codexian-input-toolbar-bottom' });
     const toolbarBottomLeft = bottomToolbar.createDiv({ cls: 'codexian-toolbar-left' });
@@ -353,6 +369,9 @@ export class CodexianView extends ItemView {
     });
 
     this.inputEl.addEventListener('keydown', (event) => {
+      if (this.handleMentionKeydown(event)) {
+        return;
+      }
       if (event.key !== 'Enter') return;
       if (event.ctrlKey && event.metaKey) {
         event.preventDefault();
@@ -364,6 +383,18 @@ export class CodexianView extends ItemView {
     });
     this.inputEl.addEventListener('input', () => {
       this.updateSendState();
+      this.refreshMentionDropdown();
+    });
+    this.inputEl.addEventListener('click', () => {
+      this.refreshMentionDropdown();
+    });
+    this.inputEl.addEventListener('keyup', (event) => {
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
+        this.refreshMentionDropdown();
+      }
+    });
+    this.inputEl.addEventListener('blur', () => {
+      window.setTimeout(() => this.hideMentionDropdown(), 80);
     });
 
     root.createDiv({ cls: 'codexian-input-hint', text: '' });
@@ -528,6 +559,9 @@ export class CodexianView extends ItemView {
 
     const prompt = this.inputEl.value.trim();
     if (!prompt) return;
+    this.hideMentionDropdown();
+
+    const packedPrompt = await this.buildPromptForSend(prompt);
 
     const conversation = this.conversation ?? await this.conversationController.loadConversation();
     this.conversation = conversation;
@@ -580,7 +614,7 @@ export class CodexianView extends ItemView {
       const effort = conversation.reasoningEffort;
       const { approvalPolicy, sandboxPolicy } = this.getModePolicies(conversation.mode);
       this.itemCardRenderer?.beginTurn();
-      await this.plugin.runtime.startTurn(threadId, prompt, {
+      await this.plugin.runtime.startTurn(threadId, packedPrompt, {
         onStart: (turnId) => {
           this.state.activeTurnId = turnId || null;
           if (this.state.cancelRequested && this.state.activeTurnId) {
@@ -676,6 +710,194 @@ export class CodexianView extends ItemView {
     }
     if (this.reasoningButtonEl) {
       this.reasoningButtonEl.disabled = this.state.isRunning;
+    }
+  }
+
+  private handleMentionKeydown(event: KeyboardEvent): boolean {
+    if (!this.mentionDropdownEl || this.mentionDropdownEl.hidden || this.mentionOptions.length === 0) {
+      if (event.key === 'Escape' && this.mentionDropdownEl && !this.mentionDropdownEl.hidden) {
+        event.preventDefault();
+        this.hideMentionDropdown();
+        return true;
+      }
+      return false;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      this.mentionSelectedIndex = (this.mentionSelectedIndex + 1) % this.mentionOptions.length;
+      this.renderMentionDropdown();
+      return true;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      this.mentionSelectedIndex =
+        (this.mentionSelectedIndex - 1 + this.mentionOptions.length) % this.mentionOptions.length;
+      this.renderMentionDropdown();
+      return true;
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault();
+      this.applySelectedMention(this.mentionSelectedIndex);
+      return true;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.hideMentionDropdown();
+      return true;
+    }
+
+    return false;
+  }
+
+  private refreshMentionDropdown(): void {
+    if (!this.inputEl) return;
+
+    const cursor = this.inputEl.selectionStart ?? this.inputEl.value.length;
+    const mentionState = getMentionState(this.inputEl.value, cursor);
+    if (!mentionState) {
+      this.hideMentionDropdown();
+      return;
+    }
+
+    const options = this.getMentionCandidates(mentionState.query);
+    if (options.length === 0) {
+      this.hideMentionDropdown();
+      return;
+    }
+
+    this.mentionOptions = options;
+    if (this.mentionSelectedIndex >= this.mentionOptions.length) {
+      this.mentionSelectedIndex = 0;
+    }
+    this.renderMentionDropdown();
+  }
+
+  private getMentionCandidates(rawQuery: string): string[] {
+    const query = rawQuery.trim().toLowerCase();
+    const files = this.app.vault.getFiles().map((file) => file.path);
+    if (files.length === 0) return [];
+
+    const matches = files.filter((filePath) => filePath.toLowerCase().includes(query));
+    matches.sort((a, b) => {
+      const aLower = a.toLowerCase();
+      const bLower = b.toLowerCase();
+      const aStarts = query ? aLower.startsWith(query) : false;
+      const bStarts = query ? bLower.startsWith(query) : false;
+      if (aStarts !== bStarts) {
+        return aStarts ? -1 : 1;
+      }
+      return aLower.localeCompare(bLower);
+    });
+
+    return matches.slice(0, MENTION_SUGGESTION_LIMIT);
+  }
+
+  private renderMentionDropdown(): void {
+    if (!this.mentionDropdownEl) return;
+
+    this.mentionDropdownEl.empty();
+    if (this.mentionOptions.length === 0) {
+      this.hideMentionDropdown();
+      return;
+    }
+
+    for (let i = 0; i < this.mentionOptions.length; i += 1) {
+      const option = this.mentionOptions[i];
+      if (!option) continue;
+      const optionEl = this.mentionDropdownEl.createEl('button', {
+        cls: 'codexian-mention-option',
+        text: option,
+        attr: { type: 'button' },
+      });
+      if (i === this.mentionSelectedIndex) {
+        optionEl.addClass('is-selected');
+      }
+      optionEl.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        this.applySelectedMention(i);
+      });
+    }
+
+    this.mentionDropdownEl.show();
+  }
+
+  private applySelectedMention(index: number): void {
+    if (!this.inputEl) return;
+    const filePath = this.mentionOptions[index];
+    if (!filePath) return;
+
+    const cursor = this.inputEl.selectionStart ?? this.inputEl.value.length;
+    const applied = applyMention(this.inputEl.value, cursor, filePath);
+    this.inputEl.value = applied.text;
+    this.inputEl.selectionStart = applied.cursor;
+    this.inputEl.selectionEnd = applied.cursor;
+    this.updateSendState();
+    this.hideMentionDropdown();
+    this.inputEl.focus();
+  }
+
+  private hideMentionDropdown(): void {
+    this.mentionOptions = [];
+    this.mentionSelectedIndex = 0;
+    if (!this.mentionDropdownEl) return;
+    this.mentionDropdownEl.empty();
+    this.mentionDropdownEl.hide();
+  }
+
+  private async buildPromptForSend(userPrompt: string): Promise<string> {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    let activeFile: { path: string; content: string } | null = null;
+    if (view?.file) {
+      const content = await this.safeReadFile(view.file);
+      if (content !== null) {
+        activeFile = {
+          path: view.file.path,
+          content,
+        };
+      }
+    }
+
+    const editor = view?.editor;
+    const selection = editor?.getSelection?.() ?? '';
+
+    const mentionedPaths = extractMentionedPaths(userPrompt);
+    const mentionedFiles = await this.resolveMentionedFiles(mentionedPaths);
+
+    return buildPromptWithContext({
+      userPrompt,
+      activeFile,
+      selection,
+      mentionedFiles,
+      limits: PROMPT_CONTEXT_LIMITS,
+    });
+  }
+
+  private async resolveMentionedFiles(paths: string[]): Promise<Array<{ path: string; content: string }>> {
+    if (paths.length === 0) return [];
+
+    const filesByPath = new Map<string, TFile>();
+    for (const file of this.app.vault.getFiles()) {
+      filesByPath.set(file.path, file);
+    }
+
+    const resolved: Array<{ path: string; content: string }> = [];
+    const maxFiles = Math.max(0, PROMPT_CONTEXT_LIMITS.maxMentionedFiles);
+    for (const filePath of paths.slice(0, maxFiles)) {
+      const file = filesByPath.get(filePath);
+      if (!file) continue;
+      const content = await this.safeReadFile(file);
+      if (content === null) continue;
+      resolved.push({ path: file.path, content });
+    }
+    return resolved;
+  }
+
+  private async safeReadFile(file: TFile): Promise<string | null> {
+    try {
+      return await this.app.vault.cachedRead(file);
+    } catch {
+      return null;
     }
   }
 
