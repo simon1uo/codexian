@@ -18,6 +18,7 @@ export class Modal {}
 
 export const MarkdownRenderer = {
   renderMarkdown: async () => undefined,
+  render: async () => undefined,
 };
 
 export const setIcon = () => undefined;

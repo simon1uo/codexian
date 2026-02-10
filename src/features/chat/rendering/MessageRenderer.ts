@@ -5,11 +5,14 @@ export class MessageRenderer {
 
   constructor(
     private container: HTMLElement,
-    private onCopy: (text: string, button?: HTMLButtonElement) => Promise<void>
+    private onCopy: (text: string, button?: HTMLButtonElement) => Promise<void>,
+    private renderMarkdown: (markdown: string, el: HTMLElement) => Promise<void>
   ) {}
 
   renderMessages(messages: ChatMessage[], append: (message: ChatMessage) => void): void {
-    this.container.empty();
+    while (this.container.firstChild) {
+      this.container.removeChild(this.container.firstChild);
+    }
     this.messageEls.clear();
 
     for (const message of messages) {
@@ -30,8 +33,15 @@ export class MessageRenderer {
     }
     const contentEl = messageEl.querySelector('.codexian-message-content');
     if (contentEl) {
-      contentEl.textContent = message.content;
+      this.renderMessageContent(message.content, contentEl as HTMLElement);
     }
+  }
+
+  renderMessageContent(content: string, contentEl: HTMLElement): void {
+    while (contentEl.firstChild) {
+      contentEl.removeChild(contentEl.firstChild);
+    }
+    void this.renderMarkdown(content, contentEl);
   }
 
   bindCopyButton(button: HTMLButtonElement, content: string): void {

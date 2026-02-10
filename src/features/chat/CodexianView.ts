@@ -1,6 +1,6 @@
 import * as path from 'path';
 import type { WorkspaceLeaf } from 'obsidian';
-import { ItemView, Menu, Modal, Notice, Setting } from 'obsidian';
+import { ItemView, MarkdownRenderer, Menu, Modal, Notice, Setting } from 'obsidian';
 
 import type CodexianPlugin from '../../main';
 import type { AppServerModel } from '../../core/runtime';
@@ -266,7 +266,11 @@ export class CodexianView extends ItemView {
     const headerActions = header.createDiv({ cls: 'codexian-actions' });
 
     this.messagesEl = root.createDiv({ cls: 'codexian-transcript' });
-    this.renderer = new MessageRenderer(this.messagesEl, this.copyMessage.bind(this));
+    this.renderer = new MessageRenderer(
+      this.messagesEl,
+      this.copyMessage.bind(this),
+      this.renderMarkdown.bind(this)
+    );
 
     const inputContainer = root.createDiv({ cls: 'codexian-input-container' });
 
@@ -450,7 +454,7 @@ export class CodexianView extends ItemView {
     this.renderer.bindCopyButton(copyButton, message.content);
 
     const contentEl = messageEl.createDiv({ cls: 'codexian-message-content codexian-message-bubble' });
-    contentEl.setText(message.content);
+    this.renderer.renderMessageContent(message.content, contentEl);
 
     this.renderer.appendMessage(message, messageEl);
   }
@@ -465,9 +469,13 @@ export class CodexianView extends ItemView {
       setIcon(copyButton, 'copy');
       this.renderer?.bindCopyButton(copyButton, item.content);
       const contentEl = messageEl.createDiv({ cls: 'codexian-message-content codexian-message-bubble' });
-      contentEl.setText(item.content);
+      this.renderer?.renderMessageContent(item.content, contentEl);
       return messageEl;
     });
+  }
+
+  private async renderMarkdown(markdown: string, el: HTMLElement): Promise<void> {
+    await MarkdownRenderer.render(this.app, markdown, el, '', this);
   }
 
   private syncSelections(): void {
