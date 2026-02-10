@@ -3,8 +3,10 @@ import type { WorkspaceLeaf } from 'obsidian';
 import { ItemView, MarkdownRenderer, Menu, Modal, Notice, Setting } from 'obsidian';
 
 import type CodexianPlugin from '../../main';
-import type { AppServerModel } from '../../core/runtime';
+import type { AppServerModel, ApprovalRequest, ApprovalRequestDecision } from '../../core/runtime';
 import type {
+  ApprovalDecision,
+  ApprovalRule,
   AppServerThread,
   ApprovalPolicy,
   ChatMessage,
@@ -236,6 +238,10 @@ export class CodexianView extends ItemView {
   private renderer: MessageRenderer | null = null;
   private itemCardRenderer: ItemCardRenderer | null = null;
   private conversationController: ConversationController;
+  private pendingApprovals = new Set<{
+    resolve: (decision: ApprovalRequestDecision) => void;
+    cardEl: HTMLElement;
+  }>();
 
   constructor(leaf: WorkspaceLeaf, plugin: CodexianPlugin) {
     super(leaf);
@@ -362,6 +368,8 @@ export class CodexianView extends ItemView {
 
     root.createDiv({ cls: 'codexian-input-hint', text: '' });
 
+    this.plugin.runtime.setApprovalRequestHandler((request) => this.showApprovalCard(request));
+
     await this.runWithStatus('Load conversation', async () => {
       await this.loadConversation();
     });
@@ -369,6 +377,15 @@ export class CodexianView extends ItemView {
       await this.loadModels();
     });
     this.updateSendState();
+  }
+
+  async onClose(): Promise<void> {
+    this.plugin.runtime.setApprovalRequestHandler(null);
+    for (const pending of this.pendingApprovals) {
+      pending.resolve({ decision: 'decline' });
+      pending.cardEl.remove();
+    }
+    this.pendingApprovals.clear();
   }
 
   private async loadConversation(): Promise<void> {
@@ -866,5 +883,107 @@ export class CodexianView extends ItemView {
         }, 1200);
       }
     }
+  }
+
+  private showApprovalCard(request: ApprovalRequest): Promise<ApprovalRequestDecision> {
+    return new Promise<ApprovalRequestDecision>((resolve) => {
+      if (!this.messagesEl) {
+        resolve({ decision: 'decline' });
+        return;
+      }
+
+      const cardEl = this.messagesEl.createDiv({ cls: 'codexian-approval-card codexian-item-card' });
+      cardEl.dataset.status = 'pending';
+      const headerEl = cardEl.createDiv({ cls: 'codexian-item-card-header' });
+      headerEl.createDiv({ cls: 'codexian-item-card-title', text: 'Approval required' });
+      const statusEl = headerEl.createDiv({ cls: 'codexian-item-card-status', text: 'Waiting' });
+      const bodyEl = cardEl.createDiv({ cls: 'codexian-item-card-body' });
+
+      if (request.kind === 'commandExecution') {
+        bodyEl.createDiv({ text: 'Command request' });
+        bodyEl.createEl('code', { text: request.command || '(unknown command)' });
+      } else {
+        bodyEl.createDiv({ text: 'File change request' });
+        const list = bodyEl.createEl('ul');
+        if (request.paths.length === 0) {
+          list.createEl('li', { text: '(unknown paths)' });
+        } else {
+          for (const filePath of request.paths) {
+            list.createEl('li', { text: filePath });
+          }
+        }
+      }
+
+      const actionsEl = cardEl.createDiv({ cls: 'codexian-approval-actions' });
+      const acceptButton = actionsEl.createEl('button', { text: 'Accept' });
+      const declineButton = actionsEl.createEl('button', { text: 'Decline' });
+      const alwaysButton = actionsEl.createEl('button', { text: 'Always' });
+
+      const pendingEntry = { resolve, cardEl };
+      this.pendingApprovals.add(pendingEntry);
+
+      const finalize = (decision: ApprovalDecision, alwaysRule?: ApprovalRule): void => {
+        if (!this.pendingApprovals.has(pendingEntry)) {
+          return;
+        }
+        this.pendingApprovals.delete(pendingEntry);
+        acceptButton.disabled = true;
+        declineButton.disabled = true;
+        alwaysButton.disabled = true;
+        statusEl.textContent = decision === 'accept' ? 'Accepted' : 'Declined';
+        cardEl.dataset.status = decision === 'accept' ? 'completed' : 'error';
+        resolve(alwaysRule ? { decision, alwaysRule } : { decision });
+      };
+
+      acceptButton.addEventListener('click', () => finalize('accept'));
+      declineButton.addEventListener('click', () => finalize('decline'));
+      alwaysButton.addEventListener('click', () => {
+        const alwaysRule = this.buildAlwaysRule(request);
+        if (!alwaysRule) {
+          finalize('accept');
+          return;
+        }
+        finalize('accept', alwaysRule);
+      });
+
+      this.scrollToBottom();
+    });
+  }
+
+  private buildAlwaysRule(request: ApprovalRequest): ApprovalRule | undefined {
+    if (request.kind === 'commandExecution') {
+      const command = request.command?.trim();
+      if (!command) return undefined;
+      return { kind: 'command', pattern: command };
+    }
+
+    const pattern = this.getCommonPathPrefix(request.paths);
+    if (!pattern) return undefined;
+    return { kind: 'path', pattern };
+  }
+
+  private getCommonPathPrefix(paths: string[]): string | undefined {
+    const normalized = paths.map((value) => value.trim().replace(/\\/g, '/')).filter((value) => value.length > 0);
+    if (normalized.length === 0) return undefined;
+    if (normalized.length === 1) return normalized[0];
+
+    const segmentsList = normalized.map((value) => value.split('/').filter((segment) => segment.length > 0));
+    const shared: string[] = [];
+    const shortest = Math.min(...segmentsList.map((segments) => segments.length));
+    const firstSegments = segmentsList[0];
+    if (!firstSegments) return normalized[0];
+    for (let i = 0; i < shortest; i += 1) {
+      const segment = firstSegments[i];
+      if (!segment) break;
+      if (segmentsList.every((segments) => segments[i] === segment)) {
+        shared.push(segment);
+      } else {
+        break;
+      }
+    }
+    if (shared.length === 0) {
+      return normalized[0];
+    }
+    return shared.join('/');
   }
 }

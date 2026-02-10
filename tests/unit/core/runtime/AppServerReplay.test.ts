@@ -72,11 +72,14 @@ const createFakeChild = (): FakeChild => {
   };
 };
 
-const buildSettings = (approvalMode: 'safe' | 'yolo' = 'safe'): CodexianSettings => ({
+const buildSettings = (approvalMode: 'safe' | 'yolo' | 'prompt' = 'safe'): CodexianSettings => ({
   cliPath: 'codex',
   environmentVariables: '',
   envSnippets: [],
   approvalMode,
+  approvalRules: [],
+  commandBlocklist: [],
+  pathBlocklist: [],
 });
 
 const replayFixturePath = path.resolve(__dirname, '../../../fixtures/app-server/replay-basic.jsonl');

@@ -24,6 +24,9 @@ export default class CodexianPlugin extends Plugin {
       .then(() => {
       this.storage = new SessionStorage(this.app.vault.adapter);
       this.runtime = new CodexRuntime(this.settings, this.getVaultPath());
+      this.runtime.setSettingsChangedHandler(async () => {
+        await this.saveSettings();
+      });
 
       this.registerView(
         VIEW_TYPE_CODEXIAN,
@@ -68,6 +71,9 @@ export default class CodexianPlugin extends Plugin {
       ...(loadedSettings ?? {}),
     };
     this.settings.envSnippets ??= [];
+    this.settings.approvalRules ??= [];
+    this.settings.commandBlocklist ??= [];
+    this.settings.pathBlocklist ??= [];
     this.activeConversationId = data?.activeConversationId ?? null;
   }
 

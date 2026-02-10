@@ -3,6 +3,9 @@ export interface CodexianSettings {
   environmentVariables: string;
   envSnippets: EnvSnippet[];
   approvalMode: ApprovalMode;
+  approvalRules: ApprovalRule[];
+  commandBlocklist: string[];
+  pathBlocklist: string[];
   lastModel?: string;
   lastReasoningEffort?: string;
   lastMode?: CodexianMode;
@@ -62,9 +65,16 @@ export interface EnvSnippet {
   updatedAt: number;
 }
 
-export type ApprovalMode = 'safe' | 'yolo';
+export type ApprovalMode = 'safe' | 'yolo' | 'prompt';
 
 export type ApprovalDecision = 'accept' | 'decline';
+
+export type ApprovalRuleKind = 'command' | 'path';
+
+export interface ApprovalRule {
+  kind: ApprovalRuleKind;
+  pattern: string;
+}
 
 export interface AppServerTextContent {
   type: 'text';

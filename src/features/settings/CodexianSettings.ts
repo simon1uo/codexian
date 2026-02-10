@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import type CodexianPlugin from '../../main';
-import type { CodexianSettings, EnvSnippet } from '../../core/types';
+import type { ApprovalRule, CodexianSettings, EnvSnippet } from '../../core/types';
 import { findCodexCLIPath, resolveCliCommand } from '../../core/runtime';
 
 export const DEFAULT_SETTINGS: CodexianSettings = {
@@ -13,10 +13,35 @@ export const DEFAULT_SETTINGS: CodexianSettings = {
   environmentVariables: '',
   envSnippets: [],
   approvalMode: 'safe',
+  approvalRules: [],
+  commandBlocklist: [],
+  pathBlocklist: [],
   lastModel: undefined,
   lastReasoningEffort: undefined,
   lastMode: undefined,
 };
+
+const parseListLines = (input: string): string[] =>
+  input
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+const parseApprovalRules = (input: string): ApprovalRule[] => {
+  return parseListLines(input)
+    .map((line) => {
+      const [rawKind, ...rest] = line.split(':');
+      const kind = (rawKind || '').trim().toLowerCase();
+      const pattern = rest.join(':').trim();
+      if (!pattern) return null;
+      if (kind !== 'command' && kind !== 'path') return null;
+      return { kind, pattern } as ApprovalRule;
+    })
+    .filter((rule): rule is ApprovalRule => !!rule);
+};
+
+const stringifyApprovalRules = (rules: ApprovalRule[]): string =>
+  rules.map((rule) => `${rule.kind}: ${rule.pattern}`).join('\n');
 
 export class CodexianSettingTab extends PluginSettingTab {
   plugin: CodexianPlugin;
@@ -99,17 +124,78 @@ export class CodexianSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Approval mode')
-      .setDesc('Safe mode declines tool/file approvals. Yolo mode auto-approves all requests.')
+      .setDesc('Safe declines requests. Prompt asks in chat. Yolo auto-approves unless blocked.')
       .addDropdown((dropdown) => {
         dropdown.addOption('safe', 'Safe (prompt-free decline)');
+        dropdown.addOption('prompt', 'Prompt (ask in transcript)');
         dropdown.addOption('yolo', 'Yolo (auto-approve)');
         dropdown.setValue(this.plugin.settings.approvalMode);
         dropdown.onChange((value) => {
           void (async () => {
-            this.plugin.settings.approvalMode = value === 'yolo' ? 'yolo' : 'safe';
+            if (value === 'yolo') {
+              this.plugin.settings.approvalMode = 'yolo';
+            } else if (value === 'prompt') {
+              this.plugin.settings.approvalMode = 'prompt';
+            } else {
+              this.plugin.settings.approvalMode = 'safe';
+            }
             await this.plugin.saveSettings();
           })();
         });
+      });
+
+    new Setting(containerEl)
+      .setName('Approval allow rules')
+      .setDesc('Add one rule per line using command or path prefixes.')
+      .addTextArea((text) => {
+        text
+          .setPlaceholder('Enter one rule per line.')
+          .setValue(stringifyApprovalRules(this.plugin.settings.approvalRules))
+          .onChange((value) => {
+            void (async () => {
+              this.plugin.settings.approvalRules = parseApprovalRules(value);
+              await this.plugin.saveSettings();
+            })();
+          });
+        text.inputEl.rows = 5;
+        text.inputEl.addClass('codexian-input-full');
+      });
+
+    new Setting(containerEl)
+      .setName('Command blocklist')
+      .setDesc('Add one command pattern per line. Supports exact and suffix wildcard patterns.')
+      .addTextArea((text) => {
+        text
+          .setPlaceholder('Rm *\nGit push --force')
+          .setValue(this.plugin.settings.commandBlocklist.join('\n'))
+          .onChange((value) => {
+            void (async () => {
+              this.plugin.settings.commandBlocklist = parseListLines(value);
+              await this.plugin.saveSettings();
+            })();
+          });
+        text.inputEl.rows = 4;
+        text.inputEl.addClass('codexian-input-full');
+      });
+
+    new Setting(containerEl)
+      .setName('Path blocklist')
+      .setDesc('One path prefix per line. Segment-aware prefix matching is used.')
+      .addTextArea((text) => {
+        const configPathExample = this.app.vault.configDir
+          ? `${this.app.vault.configDir}/plugins/`
+          : 'Config/plugins/';
+        text
+          .setPlaceholder(`${configPathExample}\nSecrets/`)
+          .setValue(this.plugin.settings.pathBlocklist.join('\n'))
+          .onChange((value) => {
+            void (async () => {
+              this.plugin.settings.pathBlocklist = parseListLines(value);
+              await this.plugin.saveSettings();
+            })();
+          });
+        text.inputEl.rows = 4;
+        text.inputEl.addClass('codexian-input-full');
       });
 
     new Setting(containerEl)

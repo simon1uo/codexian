@@ -9,6 +9,7 @@ import { ApprovalManager } from '../security/ApprovalManager';
 import type {
   ApprovalDecision,
   ApprovalPolicy,
+  ApprovalRule,
   AppServerAgentMessage,
   AppServerItem,
   AppServerTextContent,
@@ -37,6 +38,27 @@ export interface AppServerModel {
   supportedReasoningEfforts?: { reasoningEffort: string; description?: string }[];
   defaultReasoningEffort?: string;
 }
+
+export type ApprovalRequestMethod =
+  | 'item/commandExecution/requestApproval'
+  | 'item/fileChange/requestApproval';
+
+export interface ApprovalRequest {
+  method: ApprovalRequestMethod;
+  kind: 'commandExecution' | 'fileChange';
+  command?: string;
+  paths: string[];
+  params?: unknown;
+}
+
+export interface ApprovalRequestDecision {
+  decision: ApprovalDecision;
+  alwaysRule?: ApprovalRule;
+}
+
+export type ApprovalRequestHandler = (
+  request: ApprovalRequest
+) => Promise<ApprovalDecision | ApprovalRequestDecision>;
 
 interface JsonRpcRequest {
   id: number;
@@ -69,7 +91,48 @@ const getArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : 
 const normalizeApprovalDecision = (decision: ApprovalDecision | 'approve'): ApprovalDecision =>
   decision === 'approve' ? 'accept' : decision;
 
+const toApprovalDecision = (
+  decision: ApprovalDecision | ApprovalRequestDecision | 'approve'
+): ApprovalRequestDecision => {
+  if (typeof decision === 'string') {
+    return { decision: normalizeApprovalDecision(decision) };
+  }
+  return {
+    decision: normalizeApprovalDecision(decision.decision),
+    alwaysRule: decision.alwaysRule,
+  };
+};
+
 const isAgentMessageItem = (item: AppServerItem): item is AppServerAgentMessage => item.type === 'agentMessage';
+
+const extractCommandFromApprovalParams = (params: unknown): string | undefined => {
+  const record = isRecord(params) ? params : undefined;
+  const command =
+    getString(record?.command) ??
+    getString(record?.commandLine) ??
+    getString(record?.cmd) ??
+    getString(record?.input);
+  return command?.trim() || undefined;
+};
+
+const extractFilePathsFromApprovalParams = (params: unknown): string[] => {
+  const record = isRecord(params) ? params : undefined;
+  const files = getArray(record?.files);
+  return files
+    .map((entry) => {
+      if (typeof entry === 'string') return entry;
+      if (!isRecord(entry)) return undefined;
+      return (
+        getString(entry.path) ??
+        getString(entry.filePath) ??
+        getString(entry.newPath) ??
+        getString(entry.oldPath)
+      );
+    })
+    .filter((entry): entry is string => !!entry)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+};
 
 const parseAppServerItem = (value: unknown): AppServerItem | null => {
   if (!isRecord(value)) return null;
@@ -295,14 +358,20 @@ class AppServerClient {
   private notifications = new Set<(notification: JsonRpcNotification) => void>();
   private readyPromise: Promise<void> | null = null;
   private starting = false;
+  private approvalRequestHandler: ApprovalRequestHandler | null = null;
 
   constructor(
     private command: string,
     private args: string[],
     private env: NodeJS.ProcessEnv,
     private cwd: string,
-    private approvalManager: ApprovalManager
+    private approvalManager: ApprovalManager,
+    private onSettingsChanged: () => Promise<void>
   ) { }
+
+  setApprovalRequestHandler(handler: ApprovalRequestHandler | null): void {
+    this.approvalRequestHandler = handler;
+  }
 
   async start(): Promise<void> {
     if (this.readyPromise) return this.readyPromise;
@@ -440,14 +509,33 @@ class AppServerClient {
     if (!this.child) return;
 
     if (method === 'item/commandExecution/requestApproval') {
-      const decision = normalizeApprovalDecision(this.approvalManager.decideTool() as ApprovalDecision | 'approve');
+      const command = extractCommandFromApprovalParams(request.params);
+      const resolution = this.approvalManager.resolveCommand({ command });
+      const decision = resolution.requiresPrompt
+        ? await this.resolvePromptDecision({
+            method,
+            kind: 'commandExecution',
+            command,
+            paths: [],
+            params: request.params,
+          })
+        : resolution.decision;
       const response: JsonRpcResponse = { id, result: { decision } };
       this.child.stdin.write(`${JSON.stringify(response)}\n`);
       return;
     }
 
     if (method === 'item/fileChange/requestApproval') {
-      const decision = normalizeApprovalDecision(this.approvalManager.decideFileChange() as ApprovalDecision | 'approve');
+      const paths = extractFilePathsFromApprovalParams(request.params);
+      const resolution = this.approvalManager.resolveFileChange({ paths });
+      const decision = resolution.requiresPrompt
+        ? await this.resolvePromptDecision({
+            method,
+            kind: 'fileChange',
+            paths,
+            params: request.params,
+          })
+        : resolution.decision;
       const response: JsonRpcResponse = { id, result: { decision } };
       this.child.stdin.write(`${JSON.stringify(response)}\n`);
       return;
@@ -463,12 +551,41 @@ class AppServerClient {
     const response: JsonRpcResponse = { id, error: { message: `Unsupported request: ${method}` } };
     this.child.stdin.write(`${JSON.stringify(response)}\n`);
   }
+
+  private async resolvePromptDecision(request: ApprovalRequest): Promise<ApprovalDecision> {
+    if (!this.approvalRequestHandler) {
+      return 'decline';
+    }
+
+    try {
+      const output = await this.approvalRequestHandler(request);
+      const decision = toApprovalDecision(output);
+      if (decision.decision === 'accept' && decision.alwaysRule) {
+        this.approvalManager.addAllowRule(decision.alwaysRule);
+        await this.onSettingsChanged();
+      }
+      return decision.decision;
+    } catch {
+      return 'decline';
+    }
+  }
 }
 
 export class CodexRuntime {
   private client: AppServerClient | null = null;
+  private approvalRequestHandler: ApprovalRequestHandler | null = null;
+  private settingsChangedHandler: () => Promise<void> = async () => undefined;
 
   constructor(private settings: CodexianSettings, private vaultPath: string) { }
+
+  setApprovalRequestHandler(handler: ApprovalRequestHandler | null): void {
+    this.approvalRequestHandler = handler;
+    this.client?.setApprovalRequestHandler(handler);
+  }
+
+  setSettingsChangedHandler(handler: () => Promise<void>): void {
+    this.settingsChangedHandler = handler;
+  }
 
   private getClient(): AppServerClient {
     if (!this.client) {
@@ -486,9 +603,17 @@ export class CodexRuntime {
       } as NodeJS.ProcessEnv;
       env.PATH = buildEnhancedPath(command, env.PATH || '');
 
-      const approvalManager = new ApprovalManager(this.settings.approvalMode);
+      const approvalManager = new ApprovalManager(this.settings, this.vaultPath);
 
-      this.client = new AppServerClient(command, args, env, this.vaultPath, approvalManager);
+      this.client = new AppServerClient(
+        command,
+        args,
+        env,
+        this.vaultPath,
+        approvalManager,
+        () => this.settingsChangedHandler()
+      );
+      this.client.setApprovalRequestHandler(this.approvalRequestHandler);
     }
     await this.client.start();
   }

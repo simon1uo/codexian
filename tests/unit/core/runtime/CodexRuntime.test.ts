@@ -68,11 +68,14 @@ const createFakeChild = (): FakeChild => {
   };
 };
 
-const buildSettings = (approvalMode: 'safe' | 'yolo' = 'safe'): CodexianSettings => ({
+const buildSettings = (approvalMode: 'safe' | 'yolo' | 'prompt' = 'safe'): CodexianSettings => ({
   cliPath: 'codex',
   environmentVariables: '',
   envSnippets: [],
   approvalMode,
+  approvalRules: [],
+  commandBlocklist: [],
+  pathBlocklist: [],
 });
 
 describe('CodexRuntime', () => {
@@ -185,5 +188,48 @@ describe('CodexRuntime', () => {
 
     const userInputResponse = parseClientMessages(fake.writes).find((entry) => entry.id === 79);
     expect(userInputResponse).toMatchObject({ id: 79, result: { answers: {} } });
+  });
+
+  it('asks approval handler in prompt mode and stores always rule', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('prompt'), '/vault');
+    const handler = jest.fn(async () => ({
+      decision: 'accept' as const,
+      alwaysRule: { kind: 'command' as const, pattern: 'git status' },
+    }));
+    runtime.setApprovalRequestHandler(handler);
+
+    const readyPromise = runtime.ensureReady();
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    fake.stdout.write(
+      `${JSON.stringify({ id: 80, method: 'item/commandExecution/requestApproval', params: { command: 'git status' } })}\n`
+    );
+
+    await waitFor(() =>
+      parseClientMessages(fake.writes).some(
+        (entry) => entry.id === 80 && (entry.result as { decision?: string } | undefined)?.decision === 'accept'
+      )
+    );
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    const secondHandler = jest.fn(async () => 'decline' as const);
+    runtime.setApprovalRequestHandler(secondHandler);
+
+    fake.stdout.write(
+      `${JSON.stringify({ id: 81, method: 'item/commandExecution/requestApproval', params: { command: 'git status' } })}\n`
+    );
+
+    await waitFor(() =>
+      parseClientMessages(fake.writes).some(
+        (entry) => entry.id === 81 && (entry.result as { decision?: string } | undefined)?.decision === 'accept'
+      )
+    );
+
+    expect(secondHandler).not.toHaveBeenCalled();
   });
 });
