@@ -646,6 +646,27 @@ export class CodexianView extends ItemView {
     await this.runWithStatus('Load models', async () => {
       await this.loadModels();
     });
+    this.applyPendingCommandInput();
+    this.updateSendState();
+  }
+
+  public async startNewThreadFromCommand(): Promise<void> {
+    await this.createNewConversation();
+  }
+
+  public applyPendingCommandInput(): void {
+    if (!this.inputEl) {
+      return;
+    }
+    const prefill = this.plugin.consumePendingPrefillText();
+    if (!prefill) {
+      return;
+    }
+    this.inputEl.value = prefill;
+    this.inputEl.focus();
+    const end = this.inputEl.value.length;
+    this.inputEl.selectionStart = end;
+    this.inputEl.selectionEnd = end;
     this.updateSendState();
   }
 
@@ -1144,13 +1165,20 @@ export class CodexianView extends ItemView {
     const mentionedPaths = extractMentionedPaths(userPrompt);
     const mentionedFiles = await this.resolveMentionedFiles(mentionedPaths);
 
-    return buildPromptWithContext({
+    const promptWithContext = buildPromptWithContext({
       userPrompt,
       activeFile,
       selection,
       mentionedFiles,
       limits: PROMPT_CONTEXT_LIMITS,
     });
+
+    const pendingContextBlocks = this.plugin.consumePendingContextBlocks();
+    if (pendingContextBlocks.length === 0) {
+      return promptWithContext;
+    }
+
+    return `${pendingContextBlocks.join('\n\n')}\n\n${promptWithContext}`;
   }
 
   private updateReviewDiff(diff: unknown, turnId: string): void {

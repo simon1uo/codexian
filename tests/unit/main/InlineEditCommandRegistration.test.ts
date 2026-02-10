@@ -40,11 +40,19 @@ describe('Inline edit command registration', () => {
     plugin.onload();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(addCommand).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'inline-edit',
-        name: 'Inline edit selection/cursor',
-      })
+    const commandIds = addCommand.mock.calls
+      .map((call: unknown[]) => (call[0] as { id?: string }).id)
+      .filter((id: string | undefined): id is string => Boolean(id));
+
+    expect(commandIds).toEqual(
+      expect.arrayContaining([
+        'open',
+        'inline-edit',
+        'new-thread',
+        'add-selection-context',
+        'add-file-context',
+        'implement-todo',
+      ])
     );
   });
 });

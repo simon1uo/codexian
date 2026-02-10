@@ -1,4 +1,4 @@
-import { Plugin } from 'obsidian';
+import { MarkdownView, Notice, Plugin } from 'obsidian';
 
 import { CodexRuntime } from './core/runtime';
 import { SessionStorage } from './core/storage';
@@ -16,6 +16,8 @@ import { runInlineEditCommand } from './features/inline-edit/runInlineEditComman
 export default class CodexianPlugin extends Plugin {
   settings: CodexianSettings;
   runtime: CodexRuntime;
+  pendingContextBlocks: string[] = [];
+  pendingPrefillText: string | null = null;
   private storage: SessionStorage;
   private activeConversationId: string | null = null;
   private conversation: CodexianConversation | null = null;
@@ -51,6 +53,38 @@ export default class CodexianPlugin extends Plugin {
         name: 'Inline edit selection/cursor',
         callback: () => {
           void runInlineEditCommand(this);
+        },
+      });
+
+      this.addCommand({
+        id: 'new-thread',
+        name: 'New thread',
+        callback: () => {
+          void this.runNewThreadCommand();
+        },
+      });
+
+      this.addCommand({
+        id: 'add-selection-context',
+        name: 'Add selection as one-shot context',
+        callback: () => {
+          void this.runAddSelectionContextCommand();
+        },
+      });
+
+      this.addCommand({
+        id: 'add-file-context',
+        name: 'Add active file as one-shot context',
+        callback: () => {
+          void this.runAddFileContextCommand();
+        },
+      });
+
+      this.addCommand({
+        id: 'implement-todo',
+        name: 'Implement todo from selection',
+        callback: () => {
+          void this.runImplementTodoCommand();
         },
       });
 
@@ -112,6 +146,125 @@ export default class CodexianPlugin extends Plugin {
     if (leaf) {
       await workspace.revealLeaf(leaf);
     }
+  }
+
+  consumePendingContextBlocks(): string[] {
+    const blocks = [...this.pendingContextBlocks];
+    this.pendingContextBlocks = [];
+    return blocks;
+  }
+
+  consumePendingPrefillText(): string | null {
+    const text = this.pendingPrefillText;
+    this.pendingPrefillText = null;
+    return text;
+  }
+
+  private async runNewThreadCommand(): Promise<void> {
+    await this.activateView();
+    const view = this.getOpenCodexianView();
+    if (!view) {
+      new Notice('Codexian view is unavailable.');
+      return;
+    }
+    await view.startNewThreadFromCommand();
+    view.applyPendingCommandInput();
+  }
+
+  private async runAddSelectionContextCommand(): Promise<void> {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const selection = view?.editor?.getSelection?.().trim() ?? '';
+    if (!selection) {
+      new Notice('No editor selection to add.');
+      return;
+    }
+    this.pendingContextBlocks.push(this.buildSelectionContextBlock(selection));
+    await this.activateView();
+    this.getOpenCodexianView()?.applyPendingCommandInput();
+    new Notice('Queued selection context for next send.');
+  }
+
+  private async runAddFileContextCommand(): Promise<void> {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const file = view?.file;
+    if (!file) {
+      new Notice('No active file to add.');
+      return;
+    }
+
+    let content = '';
+    try {
+      content = await this.app.vault.cachedRead(file);
+    } catch {
+      new Notice('Unable to read active file content.');
+      return;
+    }
+
+    this.pendingContextBlocks.push(this.buildFileContextBlock(file.path, content));
+    await this.activateView();
+    this.getOpenCodexianView()?.applyPendingCommandInput();
+    new Notice('Queued active file context for next send.');
+  }
+
+  private async runImplementTodoCommand(): Promise<void> {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const selection = view?.editor?.getSelection?.().trim() ?? '';
+    if (!selection) {
+      new Notice('Select a todo block first.');
+      return;
+    }
+
+    const todoLine = selection
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => /\bTODO\b/i.test(line));
+
+    if (!todoLine) {
+      new Notice('Selection does not contain a todo line.');
+      return;
+    }
+
+    this.pendingPrefillText = [
+      `Implement this TODO: ${todoLine}`,
+      '',
+      'Scope guard:',
+      '- Keep changes tightly scoped to this TODO.',
+      '- Do not refactor unrelated code or behavior.',
+      '- If additional scope is required, explain it first.',
+      '',
+      'Selected context:',
+      '```text',
+      selection,
+      '```',
+    ].join('\n');
+
+    await this.activateView();
+    this.getOpenCodexianView()?.applyPendingCommandInput();
+  }
+
+  private getOpenCodexianView(): CodexianView | null {
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CODEXIAN)[0];
+    if (!leaf) {
+      return null;
+    }
+    if (leaf.view instanceof CodexianView) {
+      return leaf.view;
+    }
+    return null;
+  }
+
+  private buildSelectionContextBlock(selection: string): string {
+    return ['[Context: Command selection]', '```text', selection, '```'].join('\n');
+  }
+
+  private buildFileContextBlock(filePath: string, content: string): string {
+    return [
+      '[Context: Command file]',
+      `Path: ${filePath}`,
+      '```markdown',
+      content,
+      '```',
+    ].join('\n');
   }
 
   async getConversation(): Promise<CodexianConversation> {
