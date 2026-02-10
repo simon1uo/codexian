@@ -854,4 +854,16 @@ export class CodexRuntime {
     const client = this.getClient();
     await client.sendRequest('turn/interrupt', { threadId, turnId });
   }
+
+  async steerTurn(threadId: string, turnId: string, text: string): Promise<void> {
+    const steerText = text.trim();
+    if (!threadId || !turnId || !steerText) return;
+    await this.ensureReady();
+    const client = this.getClient();
+    await client.sendRequest('turn/steer', {
+      threadId,
+      expectedTurnId: turnId,
+      input: [{ type: 'text', text: steerText }],
+    });
+  }
 }

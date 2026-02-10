@@ -312,6 +312,36 @@ describe('CodexRuntime', () => {
     fake.stdout.write(`${JSON.stringify({ method: 'turn/completed', params: { turn: { id: 'turn-9', status: 'completed' } } })}\n`);
     await waitFor(() => onComplete.mock.calls.length === 1);
   });
+
+  it('sends turn/steer request with expectedTurnId and text input', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('safe'), '/vault');
+    const readyPromise = runtime.ensureReady();
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    const steerPromise = runtime.steerTurn('thread-1', 'turn-2', '  Focus on failing tests only.  ');
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'turn/steer'));
+
+    const steerRequest = parseClientMessages(fake.writes).find((entry) => entry.method === 'turn/steer');
+    expect(steerRequest).toMatchObject({
+      id: 2,
+      method: 'turn/steer',
+      params: {
+        threadId: 'thread-1',
+        expectedTurnId: 'turn-2',
+        input: [{ type: 'text', text: 'Focus on failing tests only.' }],
+      },
+    });
+
+    fake.stdout.write(`${JSON.stringify({ id: 2, result: {} })}\n`);
+    await expect(steerPromise).resolves.toBeUndefined();
+  });
 });
 
 describe('buildTurnInputItems', () => {

@@ -322,9 +322,46 @@ class PlanFeedbackModal extends Modal {
   }
 }
 
+class SteerModal extends Modal {
+  private onConfirm: (text: string) => void;
+
+  constructor(plugin: CodexianPlugin, onConfirm: (text: string) => void) {
+    super(plugin.app);
+    this.onConfirm = onConfirm;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: 'Steer running turn' });
+
+    let steerText = '';
+    new Setting(contentEl)
+      .setName('Steer text')
+      .addTextArea((text) => {
+        text.setPlaceholder('Give a short steering instruction.');
+        text.inputEl.rows = 4;
+        text.onChange((value) => {
+          steerText = value;
+        });
+      });
+
+    const actions = contentEl.createDiv({ cls: 'codexian-modal-actions' });
+    const cancelBtn = actions.createEl('button', { text: 'Cancel' });
+    const confirmBtn = actions.createEl('button', { text: 'Send' });
+
+    cancelBtn.addEventListener('click', () => this.close());
+    confirmBtn.addEventListener('click', () => {
+      this.onConfirm(steerText.trim());
+      this.close();
+    });
+  }
+}
+
 void RollbackModal;
 void ImagePathModal;
 void PlanFeedbackModal;
+void SteerModal;
 
 export class CodexianView extends ItemView {
   private plugin: CodexianPlugin;
@@ -334,6 +371,7 @@ export class CodexianView extends ItemView {
   private messagesEl: HTMLElement | null = null;
   private inputEl: HTMLTextAreaElement | null = null;
   private sendButtonEl: HTMLButtonElement | null = null;
+  private steerButtonEl: HTMLButtonElement | null = null;
   private modeButtonEl: HTMLButtonElement | null = null;
   private planModeButtonEl: HTMLButtonElement | null = null;
   private modelButtonEl: HTMLButtonElement | null = null;
@@ -477,6 +515,14 @@ export class CodexianView extends ItemView {
     this.sendButtonEl = createIconButton(toolbarRight, 'arrow-up', {
       ariaLabel: 'Enter a message to get started.',
       className: 'codexian-send codexian-icon-btn',
+    });
+    this.steerButtonEl = createIconButton(toolbarRight, 'navigation', {
+      ariaLabel: 'Steer running turn',
+      className: 'codexian-icon-btn',
+      tooltip: 'Steer running turn',
+    });
+    this.steerButtonEl.addEventListener('click', () => {
+      void this.handleSteer();
     });
     this.sendButtonEl.addEventListener('click', () => {
       if (this.state.isRunning) {
@@ -840,6 +886,16 @@ export class CodexianView extends ItemView {
     }
   }
 
+  private async handleSteer(): Promise<void> {
+    if (!this.state.isRunning) return;
+    const threadId = this.conversation?.threadId ?? '';
+    const turnId = this.state.activeTurnId ?? '';
+    if (!threadId || !turnId) return;
+    const steerText = await this.collectSteerTextFromModal();
+    if (!steerText) return;
+    await this.plugin.runtime.steerTurn(threadId, turnId, steerText);
+  }
+
   private updateSendState(): void {
     if (!this.sendButtonEl || !this.inputEl) return;
     const hasText = this.inputEl.value.trim().length > 0;
@@ -866,6 +922,9 @@ export class CodexianView extends ItemView {
     }
     if (this.reasoningButtonEl) {
       this.reasoningButtonEl.disabled = this.state.isRunning;
+    }
+    if (this.steerButtonEl) {
+      this.steerButtonEl.disabled = !this.state.isRunning;
     }
   }
 
@@ -1103,6 +1162,20 @@ export class CodexianView extends ItemView {
   private async collectPlanFeedbackFromModal(): Promise<string | null> {
     return new Promise<string | null>((resolve) => {
       const modal = new PlanFeedbackModal(this.plugin, (value) => {
+        resolve(value || null);
+      });
+      const originalOnClose = modal.onClose.bind(modal);
+      modal.onClose = (): void => {
+        originalOnClose();
+        resolve(null);
+      };
+      modal.open();
+    });
+  }
+
+  private async collectSteerTextFromModal(): Promise<string | null> {
+    return new Promise<string | null>((resolve) => {
+      const modal = new SteerModal(this.plugin, (value) => {
         resolve(value || null);
       });
       const originalOnClose = modal.onClose.bind(modal);
