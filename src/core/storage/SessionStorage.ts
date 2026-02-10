@@ -1,6 +1,11 @@
 import type { DataAdapter } from 'obsidian';
 
-import type { ChatMessage, CodexianConversation, CodexianMode } from '../types';
+import type {
+  ChatMessage,
+  CodexianConversation,
+  CodexianConversationItem,
+  CodexianMode,
+} from '../types';
 
 const SESSIONS_PATH = '.claude/sessions';
 
@@ -22,7 +27,17 @@ interface SessionMessageRecord {
   message: ChatMessage;
 }
 
-type SessionRecord = SessionMetaRecord | SessionMessageRecord;
+interface SessionItemRecord {
+  type: 'item';
+  threadId?: string;
+  turnId?: string;
+  itemId?: string;
+  itemType: string;
+  timestamp: number;
+  item: unknown;
+}
+
+type SessionRecord = SessionMetaRecord | SessionMessageRecord | SessionItemRecord;
 
 export class SessionStorage {
   constructor(private adapter: DataAdapter) {}
@@ -64,14 +79,25 @@ export class SessionStorage {
 
     let meta: SessionMetaRecord | null = null;
     const messages: ChatMessage[] = [];
+    const items: CodexianConversationItem[] = [];
 
     for (const line of lines) {
       try {
-        const record = JSON.parse(line) as SessionRecord;
+        const record = JSON.parse(line) as SessionRecord | { type?: unknown };
         if (record.type === 'meta') {
-          meta = record;
+          meta = record as SessionMetaRecord;
         } else if (record.type === 'message') {
-          messages.push(record.message);
+          messages.push((record as SessionMessageRecord).message);
+        } else if (record.type === 'item') {
+          const itemRecord = record as SessionItemRecord;
+          items.push({
+            threadId: itemRecord.threadId,
+            turnId: itemRecord.turnId,
+            itemId: itemRecord.itemId,
+            itemType: itemRecord.itemType,
+            timestamp: itemRecord.timestamp,
+            item: itemRecord.item,
+          });
         }
       } catch {
         continue;
@@ -91,6 +117,7 @@ export class SessionStorage {
       updatedAt: meta.updatedAt,
       lastResponseAt: meta.lastResponseAt,
       messages,
+      items: items.length > 0 ? items : undefined,
     };
   }
 
@@ -111,6 +138,18 @@ export class SessionStorage {
     const lines: string[] = [JSON.stringify(meta)];
     for (const message of conversation.messages) {
       const record: SessionMessageRecord = { type: 'message', message };
+      lines.push(JSON.stringify(record));
+    }
+    for (const item of conversation.items ?? []) {
+      const record: SessionItemRecord = {
+        type: 'item',
+        threadId: item.threadId,
+        turnId: item.turnId,
+        itemId: item.itemId,
+        itemType: item.itemType,
+        timestamp: item.timestamp,
+        item: item.item,
+      };
       lines.push(JSON.stringify(record));
     }
     return `${lines.join('\n')}\n`;
