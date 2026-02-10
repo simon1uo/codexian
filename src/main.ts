@@ -11,6 +11,7 @@ import type {
 } from './core/types';
 import { CodexianSettingTab, DEFAULT_SETTINGS } from './features/settings/CodexianSettings';
 import { CodexianView, VIEW_TYPE_CODEXIAN } from './features/chat/CodexianView';
+import { runInlineEditCommand } from './features/inline-edit/runInlineEditCommand';
 
 export default class CodexianPlugin extends Plugin {
   settings: CodexianSettings;
@@ -42,6 +43,14 @@ export default class CodexianPlugin extends Plugin {
         name: 'Open',
         callback: () => {
           void this.activateView();
+        },
+      });
+
+      this.addCommand({
+        id: 'inline-edit',
+        name: 'Inline edit selection/cursor',
+        callback: () => {
+          void runInlineEditCommand(this);
         },
       });
 
