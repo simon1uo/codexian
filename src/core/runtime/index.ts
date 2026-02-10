@@ -47,6 +47,13 @@ export interface AppServerSkill {
   [key: string]: unknown;
 }
 
+export interface AppServerCollaborationMode {
+  slug: string;
+  name?: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
 export type ApprovalRequestMethod =
   | 'item/commandExecution/requestApproval'
   | 'item/fileChange/requestApproval';
@@ -292,6 +299,32 @@ const extractSkillList = (value: unknown): AppServerSkill[] => {
       : getArray(container.skills)
     : getArray(value);
   return list.map((entry) => parseSkill(entry)).filter((entry): entry is AppServerSkill => !!entry);
+};
+
+const parseCollaborationMode = (value: unknown): AppServerCollaborationMode | null => {
+  if (!isRecord(value)) return null;
+  const slug = getString(value.slug)?.trim();
+  if (!slug) return null;
+  const name = getString(value.name)?.trim();
+  const description = getString(value.description)?.trim();
+  return {
+    ...value,
+    slug,
+    name: name || undefined,
+    description: description || undefined,
+  };
+};
+
+const extractCollaborationModeList = (value: unknown): AppServerCollaborationMode[] => {
+  const container = isRecord(value) ? value : undefined;
+  const list = container
+    ? getArray(container.data).length > 0
+      ? getArray(container.data)
+      : getArray(container.collaborationModes)
+    : getArray(value);
+  return list
+    .map((entry) => parseCollaborationMode(entry))
+    .filter((entry): entry is AppServerCollaborationMode => !!entry);
 };
 
 export function expandHomePath(input: string): string {
@@ -792,6 +825,15 @@ export class CodexRuntime {
     return extractSkillList(result);
   }
 
+  async listCollaborationModes(): Promise<AppServerCollaborationMode[]> {
+    await this.ensureReady();
+    const client = this.getClient();
+    const result = await client.sendRequest('collaborationMode/list', {
+      cwd: this.vaultPath || undefined,
+    });
+    return extractCollaborationModeList(result);
+  }
+
   async startTurn(
     threadId: string,
     prompt: string,
@@ -801,7 +843,8 @@ export class CodexRuntime {
     approvalPolicy?: ApprovalPolicy,
     sandboxPolicy?: SandboxPolicy,
     localImagePaths: string[] = [],
-    skill?: StartTurnSkill
+    skill?: StartTurnSkill,
+    collaborationMode?: string
   ): Promise<void> {
     await this.ensureReady();
     const client = this.getClient();
@@ -906,6 +949,7 @@ export class CodexRuntime {
         effort: reasoningEffort || undefined,
         approvalPolicy: approvalPolicy || undefined,
         sandboxPolicy: sandboxPolicy || undefined,
+        collaborationMode: collaborationMode?.trim() || undefined,
       });
       const responseRecord = isRecord(response) ? response : undefined;
       const turn = isRecord(responseRecord?.turn) ? responseRecord?.turn : undefined;

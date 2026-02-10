@@ -356,6 +356,46 @@ describe('CodexRuntime', () => {
     await expect(turnPromise).resolves.toBeUndefined();
   });
 
+  it('includes collaborationMode in turn/start params when set', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('safe'), '/vault');
+    const readyPromise = runtime.ensureReady();
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    const turnPromise = runtime.startTurn(
+      'thread-1',
+      'Help me implement this',
+      {
+        onStart: () => undefined,
+        onDelta: () => undefined,
+        onMessage: () => undefined,
+        onError: () => undefined,
+        onComplete: () => undefined,
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      ' code-review '
+    );
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'turn/start'));
+
+    const turnStartRequest = parseClientMessages(fake.writes).find((entry) => entry.method === 'turn/start');
+    const params = turnStartRequest?.params as { collaborationMode?: string } | undefined;
+    expect(params?.collaborationMode).toBe('code-review');
+
+    fake.stdout.write(`${JSON.stringify({ id: 2, result: { turn: { id: 'turn-collab' } } })}\n`);
+    await expect(turnPromise).resolves.toBeUndefined();
+  });
+
   it('routes turn/plan/updated notifications to onPlanUpdated handler', async () => {
     const fake = createFakeChild();
     mockSpawn.mockReturnValue(fake.child);

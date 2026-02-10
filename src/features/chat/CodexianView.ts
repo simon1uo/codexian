@@ -5,7 +5,13 @@ import type { WorkspaceLeaf } from 'obsidian';
 import { ItemView, MarkdownRenderer, MarkdownView, Menu, Modal, Notice, Setting, TFile } from 'obsidian';
 
 import type CodexianPlugin from '../../main';
-import type { AppServerModel, AppServerSkill, ApprovalRequest, ApprovalRequestDecision } from '../../core/runtime';
+import type {
+  AppServerCollaborationMode,
+  AppServerModel,
+  AppServerSkill,
+  ApprovalRequest,
+  ApprovalRequestDecision,
+} from '../../core/runtime';
 import type {
   ApprovalDecision,
   ApprovalRule,
@@ -390,6 +396,7 @@ export class CodexianView extends ItemView {
   private planModeButtonEl: HTMLButtonElement | null = null;
   private modelButtonEl: HTMLButtonElement | null = null;
   private skillButtonEl: HTMLButtonElement | null = null;
+  private collaborationModeButtonEl: HTMLButtonElement | null = null;
   private reasoningButtonEl: HTMLButtonElement | null = null;
   private state: ChatState = { ...DEFAULT_CHAT_STATE };
   private models: AppServerModel[] = [];
@@ -417,6 +424,7 @@ export class CodexianView extends ItemView {
     cardEl: HTMLElement;
   }>();
   private selectedSkillsByConversation = new Map<string, AppServerSkill | null>();
+  private selectedCollaborationModesByConversation = new Map<string, string | null>();
 
   constructor(leaf: WorkspaceLeaf, plugin: CodexianPlugin) {
     super(leaf);
@@ -576,6 +584,15 @@ export class CodexianView extends ItemView {
     });
     this.skillButtonEl.addEventListener('click', (event) => {
       void this.openSkillMenu(event);
+    });
+
+    this.collaborationModeButtonEl = createIconButton(toolbarBottomLeft, 'users', {
+      ariaLabel: 'Select collaboration mode',
+      className: 'codexian-action-btn codexian-icon-btn codexian-dropdown-btn',
+      tooltip: 'Select collaboration mode',
+    });
+    this.collaborationModeButtonEl.addEventListener('click', (event) => {
+      void this.openCollaborationModeMenu(event);
     });
 
     this.reasoningButtonEl = createIconButton(toolbarBottomLeft, 'brain', {
@@ -826,7 +843,9 @@ export class CodexianView extends ItemView {
   private syncSelections(): void {
     this.normalizeEffortSelection();
     this.ensureConversationSkillSelection();
+    this.ensureConversationCollaborationModeSelection();
     this.updateSkillButtonState();
+    this.updateCollaborationModeButtonState();
   }
 
   private setStatus(text: string, variant?: 'error' | 'running' | 'idle'): void {
@@ -865,6 +884,7 @@ export class CodexianView extends ItemView {
 
     const packedPromptBase = await this.buildPromptForSend(promptWithReviewComments);
     const selectedSkill = this.getSelectedSkill();
+    const selectedCollaborationMode = this.getSelectedCollaborationMode();
     const promptWithSkill = selectedSkill ? `$${selectedSkill.name} ${packedPromptBase}` : packedPromptBase;
     const packedPrompt = buildPlanModePrompt(
       promptWithSkill,
@@ -921,6 +941,15 @@ export class CodexianView extends ItemView {
           const previousSkill = this.selectedSkillsByConversation.get(previousSkillKey) ?? null;
           this.selectedSkillsByConversation.set(nextSkillKey, previousSkill);
           this.selectedSkillsByConversation.delete(previousSkillKey);
+        }
+        if (
+          previousSkillKey !== nextSkillKey &&
+          this.selectedCollaborationModesByConversation.has(previousSkillKey)
+        ) {
+          const previousCollaborationMode =
+            this.selectedCollaborationModesByConversation.get(previousSkillKey) ?? null;
+          this.selectedCollaborationModesByConversation.set(nextSkillKey, previousCollaborationMode);
+          this.selectedCollaborationModesByConversation.delete(previousSkillKey);
         }
         await this.plugin.saveConversation(conversation);
       }
@@ -996,7 +1025,7 @@ export class CodexianView extends ItemView {
           void this.cleanupTempAttachmentFiles(imageAttachments);
           void this.plugin.saveConversation(conversation);
         },
-      }, model, effort, approvalPolicy, sandboxPolicy, imagePaths, selectedSkill ?? undefined);
+      }, model, effort, approvalPolicy, sandboxPolicy, imagePaths, selectedSkill ?? undefined, selectedCollaborationMode ?? undefined);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error.';
       assistantMessage.content = `Error: ${message}`;
@@ -1058,6 +1087,9 @@ export class CodexianView extends ItemView {
     if (this.skillButtonEl) {
       this.skillButtonEl.disabled = this.state.isRunning;
     }
+    if (this.collaborationModeButtonEl) {
+      this.collaborationModeButtonEl.disabled = this.state.isRunning;
+    }
     if (this.steerButtonEl) {
       this.steerButtonEl.disabled = !this.state.isRunning;
     }
@@ -1105,6 +1137,46 @@ export class CodexianView extends ItemView {
     const label = selectedSkill ? `Skill: ${selectedSkill.name}` : 'Select skill';
     this.skillButtonEl.setAttribute('aria-label', label);
     this.skillButtonEl.setAttribute('data-tooltip', label);
+  }
+
+  private ensureConversationCollaborationModeSelection(): void {
+    const conversation = this.conversation;
+    if (!conversation) {
+      return;
+    }
+    const key = this.getConversationSkillKey(conversation);
+    if (!this.selectedCollaborationModesByConversation.has(key)) {
+      this.selectedCollaborationModesByConversation.set(key, null);
+    }
+  }
+
+  private getSelectedCollaborationMode(): string | null {
+    const conversation = this.conversation;
+    if (!conversation) {
+      return null;
+    }
+    const key = this.getConversationSkillKey(conversation);
+    return this.selectedCollaborationModesByConversation.get(key) ?? null;
+  }
+
+  private setSelectedCollaborationMode(mode: string | null): void {
+    const conversation = this.conversation;
+    if (!conversation) {
+      return;
+    }
+    const key = this.getConversationSkillKey(conversation);
+    this.selectedCollaborationModesByConversation.set(key, mode);
+    this.updateCollaborationModeButtonState();
+  }
+
+  private updateCollaborationModeButtonState(): void {
+    if (!this.collaborationModeButtonEl) {
+      return;
+    }
+    const selectedMode = this.getSelectedCollaborationMode();
+    const label = selectedMode ? `Collab: ${selectedMode}` : 'Select collaboration mode';
+    this.collaborationModeButtonEl.setAttribute('aria-label', label);
+    this.collaborationModeButtonEl.setAttribute('data-tooltip', label);
   }
 
   private handleMentionKeydown(event: KeyboardEvent): boolean {
@@ -1955,6 +2027,54 @@ export class CodexianView extends ItemView {
         }
         item.onClick(() => {
           this.setSelectedSkill({ name: skill.name, path: skill.path });
+        });
+      });
+    }
+
+    menu.showAtMouseEvent(event);
+  }
+
+  private async openCollaborationModeMenu(event: MouseEvent): Promise<void> {
+    if (!this.conversation) return;
+
+    let modes: AppServerCollaborationMode[] = [];
+    try {
+      modes = await this.plugin.runtime.listCollaborationModes();
+    } catch {
+      modes = [];
+    }
+
+    const selected = this.getSelectedCollaborationMode();
+    const menu = new Menu();
+
+    if (selected) {
+      menu.addItem((item) => {
+        item.setTitle('No collaboration mode');
+        item.onClick(() => {
+          this.setSelectedCollaborationMode(null);
+        });
+      });
+    }
+
+    if (modes.length === 0) {
+      menu.addItem((item) => {
+        item.setTitle('No collaboration modes available');
+        item.setDisabled(true);
+      });
+      menu.showAtMouseEvent(event);
+      return;
+    }
+
+    for (const mode of modes) {
+      const modeSlug = mode.slug;
+      const title = mode.name ? `${mode.name} (${modeSlug})` : modeSlug;
+      menu.addItem((item) => {
+        item.setTitle(title);
+        if (selected === modeSlug) {
+          item.setChecked(true);
+        }
+        item.onClick(() => {
+          this.setSelectedCollaborationMode(modeSlug);
         });
       });
     }
