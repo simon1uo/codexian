@@ -1,6 +1,6 @@
 import type { AppServerItem } from '../../../core/types';
 
-type SupportedItemCardType = 'commandExecution' | 'fileChange' | 'plan' | 'reasoning';
+type SupportedItemCardType = 'commandExecution' | 'fileChange' | 'plan' | 'reasoning' | 'mcpToolCall';
 
 interface ItemCardEntry {
   type: SupportedItemCardType;
@@ -20,7 +20,11 @@ const getString = (value: unknown): string | undefined => (typeof value === 'str
 const getArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
 const isSupportedItemType = (type: string): type is SupportedItemCardType =>
-  type === 'commandExecution' || type === 'fileChange' || type === 'plan' || type === 'reasoning';
+  type === 'commandExecution' ||
+  type === 'fileChange' ||
+  type === 'plan' ||
+  type === 'reasoning' ||
+  type === 'mcpToolCall';
 
 const stringifyJson = (value: unknown): string => JSON.stringify(value ?? {}, null, 2);
 
@@ -87,6 +91,8 @@ export class ItemCardRenderer {
       this.renderFileChange(entry, raw);
     } else if (item.type === 'plan') {
       this.renderPlan(entry, raw);
+    } else if (item.type === 'mcpToolCall') {
+      this.renderMcpToolCall(entry, raw);
     } else {
       this.renderReasoning(entry, raw);
     }
@@ -127,6 +133,15 @@ export class ItemCardRenderer {
         if (summaryEl) {
           summaryEl.textContent = summary;
         }
+      }
+    }
+
+    if (entry.type === 'mcpToolCall') {
+      const status = getString(raw?.status) ?? getString(raw?.state) ?? 'completed';
+      const statusLabel = status.slice(0, 1).toUpperCase() + status.slice(1);
+      entry.statusEl.textContent = statusLabel;
+      if (status.toLowerCase() === 'error' || status.toLowerCase() === 'failed') {
+        entry.cardEl.dataset.status = 'error';
       }
     }
   }
@@ -300,6 +315,64 @@ export class ItemCardRenderer {
     if (!summary) {
       this.appendJsonFallback(entry.bodyEl, raw);
     }
+  }
+
+  private renderMcpToolCall(entry: ItemCardEntry, raw?: Record<string, unknown>): void {
+    const server =
+      getString(raw?.server) ?? getString(raw?.serverName) ?? getString(raw?.mcpServer) ?? getString(raw?.host) ?? '-';
+    const tool =
+      getString(raw?.tool) ?? getString(raw?.toolName) ?? getString(raw?.name) ?? getString(raw?.method) ?? '-';
+    const status = getString(raw?.status) ?? getString(raw?.state) ?? 'running';
+
+    entry.statusEl.textContent = status.slice(0, 1).toUpperCase() + status.slice(1);
+
+    const metaEl = document.createElement('div');
+    metaEl.className = 'codexian-item-mcp-meta';
+    metaEl.textContent = `Server: ${server} | Tool: ${tool}`;
+    entry.bodyEl.appendChild(metaEl);
+
+    const argsValue = raw?.arguments ?? raw?.args ?? raw?.input ?? raw?.inputArguments;
+    const resultValue = raw?.result ?? raw?.output;
+    const errorValue = raw?.error;
+
+    this.appendCollapsibleJson(entry.bodyEl, 'Arguments', argsValue, true);
+    this.appendCollapsibleJson(entry.bodyEl, 'Result', resultValue, true);
+    this.appendCollapsibleJson(entry.bodyEl, 'Error', errorValue, true);
+
+    if (argsValue === undefined && resultValue === undefined && errorValue === undefined) {
+      this.appendJsonFallback(entry.bodyEl, raw);
+    }
+  }
+
+  private appendCollapsibleJson(
+    parent: HTMLElement,
+    label: string,
+    value: unknown,
+    collapsedByDefault: boolean
+  ): void {
+    if (value === undefined) return;
+
+    const controlsEl = document.createElement('div');
+    controlsEl.className = 'codexian-item-card-controls';
+    const toggleButtonEl = document.createElement('button');
+    toggleButtonEl.className = 'codexian-item-toggle';
+    toggleButtonEl.type = 'button';
+    toggleButtonEl.textContent = `${collapsedByDefault ? 'Expand' : 'Collapse'} ${label.toLowerCase()}`;
+    controlsEl.appendChild(toggleButtonEl);
+
+    const contentEl = document.createElement('pre');
+    contentEl.className = 'codexian-item-fallback-json';
+    contentEl.textContent = stringifyJson(value);
+    contentEl.hidden = collapsedByDefault;
+
+    toggleButtonEl.addEventListener('click', () => {
+      const expanded = !contentEl.hidden;
+      contentEl.hidden = expanded;
+      toggleButtonEl.textContent = `${expanded ? 'Expand' : 'Collapse'} ${label.toLowerCase()}`;
+    });
+
+    parent.appendChild(controlsEl);
+    parent.appendChild(contentEl);
   }
 
   private appendJsonFallback(parent: HTMLElement, raw?: Record<string, unknown>): void {

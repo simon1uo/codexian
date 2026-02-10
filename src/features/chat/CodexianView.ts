@@ -7,6 +7,7 @@ import { ItemView, MarkdownRenderer, MarkdownView, Menu, Modal, Notice, Setting,
 import type CodexianPlugin from '../../main';
 import type {
   AppServerCollaborationMode,
+  AppServerMcpServerStatus,
   AppServerModel,
   AppServerSkill,
   ApprovalRequest,
@@ -229,6 +230,94 @@ class SessionManagerModal extends Modal {
   }
 }
 
+class McpStatusModal extends Modal {
+  private plugin: CodexianPlugin;
+
+  constructor(plugin: CodexianPlugin) {
+    super(plugin.app);
+    this.plugin = plugin;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: 'Mcp servers' });
+    const listEl = contentEl.createDiv({ cls: 'codexian-session-list' });
+    const loadingEl = listEl.createDiv({ text: 'Loading mcp server status...' });
+
+    void (async () => {
+      let servers: AppServerMcpServerStatus[] = [];
+      try {
+        servers = await this.plugin.runtime.listMcpServerStatus();
+      } catch {
+        loadingEl.setText('Failed to load mcp server status.');
+        return;
+      }
+
+      loadingEl.remove();
+      if (servers.length === 0) {
+        listEl.createDiv({ text: 'No mcp servers available.' });
+        return;
+      }
+
+      servers.forEach((server, index) => this.renderServerRow(listEl, server, index));
+    })();
+  }
+
+  private renderServerRow(parent: HTMLElement, server: AppServerMcpServerStatus, index: number): void {
+    const rowEl = parent.createDiv({ cls: 'codexian-session-row' });
+    const serverName =
+      getString(server.name) ??
+      getString(server.server) ??
+      getString(server.serverName) ??
+      getString(server.id) ??
+      `Server ${index + 1}`;
+    const serverStatus = getString(server.status) ?? getString(server.state) ?? 'unknown';
+    rowEl.createDiv({ cls: 'codexian-session-title', text: serverName });
+    rowEl.createDiv({ cls: 'codexian-session-meta', text: `Status: ${serverStatus}` });
+
+    const bodyEl = rowEl.createDiv({ cls: 'codexian-item-card-body' });
+    this.renderNamedList(bodyEl, 'Tools', server.tools, ['name', 'tool', 'title', 'id']);
+    this.renderNamedList(bodyEl, 'Resources', server.resources, ['name', 'resource', 'title', 'id']);
+  }
+
+  private renderNamedList(
+    parent: HTMLElement,
+    title: string,
+    source: unknown,
+    nameFields: string[]
+  ): void {
+    const entries = getArray(source)
+      .map((entry) => {
+        if (typeof entry === 'string') {
+          const cleaned = entry.trim();
+          return cleaned.length > 0 ? cleaned : null;
+        }
+        if (!isRecord(entry)) {
+          return null;
+        }
+        for (const field of nameFields) {
+          const value = getString(entry[field]);
+          if (value?.trim()) {
+            return value.trim();
+          }
+        }
+        return null;
+      })
+      .filter((value): value is string => !!value);
+
+    const sectionEl = parent.createDiv();
+    sectionEl.createDiv({ text: `${title}: ${entries.length}` });
+    if (entries.length === 0) {
+      return;
+    }
+    const listEl = sectionEl.createEl('ul');
+    entries.forEach((entry) => {
+      listEl.createEl('li', { text: entry });
+    });
+  }
+}
+
 class RollbackModal extends Modal {
   private onConfirm: (turns: number) => void;
 
@@ -382,6 +471,7 @@ void RollbackModal;
 void ImagePathModal;
 void PlanFeedbackModal;
 void SteerModal;
+void McpStatusModal;
 
 export class CodexianView extends ItemView {
   private plugin: CodexianPlugin;
@@ -533,6 +623,10 @@ export class CodexianView extends ItemView {
       ariaLabel: 'Session history',
       className: 'codexian-action-btn codexian-icon-btn',
     });
+    const mcpButton = createIconButton(headerActions, 'plug', {
+      ariaLabel: 'MCP status',
+      className: 'codexian-action-btn codexian-icon-btn',
+    });
     const newButton = createIconButton(headerActions, 'square-pen', {
       ariaLabel: 'New session',
       className: 'codexian-action-btn codexian-icon-btn',
@@ -542,6 +636,11 @@ export class CodexianView extends ItemView {
       const modal = new SessionManagerModal(this.plugin, (threadId) => {
         void this.loadThreadConversation(threadId);
       });
+      modal.open();
+    });
+
+    mcpButton.addEventListener('click', () => {
+      const modal = new McpStatusModal(this.plugin);
       modal.open();
     });
 

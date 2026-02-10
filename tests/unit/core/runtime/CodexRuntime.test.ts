@@ -314,6 +314,44 @@ describe('CodexRuntime', () => {
     ]);
   });
 
+  it('lists MCP server status from mcpServerStatus/list', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('safe'), '/vault');
+    const readyPromise = runtime.ensureReady();
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    const listPromise = runtime.listMcpServerStatus();
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'mcpServerStatus/list'));
+
+    const request = parseClientMessages(fake.writes).find((entry) => entry.method === 'mcpServerStatus/list');
+    expect(request).toMatchObject({
+      id: 2,
+      method: 'mcpServerStatus/list',
+      params: { cwd: '/vault' },
+    });
+
+    fake.stdout.write(
+      `${JSON.stringify({
+        id: 2,
+        result: {
+          data: [
+            { name: 'filesystem', status: 'connected', tools: [{ name: 'read_file' }], resources: [] },
+            'invalid-entry',
+          ],
+        },
+      })}\n`
+    );
+
+    await expect(listPromise).resolves.toEqual([
+      { name: 'filesystem', status: 'connected', tools: [{ name: 'read_file' }], resources: [] },
+    ]);
+  });
+
   it('sends skill input item when a skill is selected', async () => {
     const fake = createFakeChild();
     mockSpawn.mockReturnValue(fake.child);

@@ -71,4 +71,37 @@ describe('ItemCardRenderer', () => {
     expect(diff?.hidden).toBe(true);
     expect(toggle?.textContent).toBe('Expand diff');
   });
+
+  it('renders mcpToolCall card with server/tool/status and collapsible JSON blocks', () => {
+    const transcriptEl = document.createElement('div');
+    const renderer = new ItemCardRenderer(transcriptEl);
+
+    renderer.handleItemStarted(
+      createItem('mcpToolCall', 'mcp-1', {
+        server: 'filesystem',
+        tool: 'read_file',
+        status: 'running',
+        arguments: { path: 'src/main.ts' },
+      })
+    );
+
+    const card = transcriptEl.querySelector('.codexian-item-mcpToolCall');
+    expect(card).not.toBeNull();
+    expect(card?.querySelector('.codexian-item-card-status')?.textContent).toBe('Running');
+    expect(card?.querySelector('.codexian-item-mcp-meta')?.textContent).toContain('Server: filesystem');
+    expect(card?.querySelector('.codexian-item-mcp-meta')?.textContent).toContain('Tool: read_file');
+
+    const firstToggle = card?.querySelector('.codexian-item-toggle');
+    expect(firstToggle).not.toBeNull();
+    expect(firstToggle?.textContent).toBe('Expand arguments');
+
+    renderer.handleItemCompleted(
+      createItem('mcpToolCall', 'mcp-1', {
+        status: 'completed',
+        result: { ok: true },
+      })
+    );
+
+    expect(card?.querySelector('.codexian-item-card-status')?.textContent).toBe('Completed');
+  });
 });

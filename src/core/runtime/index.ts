@@ -54,6 +54,10 @@ export interface AppServerCollaborationMode {
   [key: string]: unknown;
 }
 
+export interface AppServerMcpServerStatus {
+  [key: string]: unknown;
+}
+
 export type ApprovalRequestMethod =
   | 'item/commandExecution/requestApproval'
   | 'item/fileChange/requestApproval';
@@ -325,6 +329,29 @@ const extractCollaborationModeList = (value: unknown): AppServerCollaborationMod
   return list
     .map((entry) => parseCollaborationMode(entry))
     .filter((entry): entry is AppServerCollaborationMode => !!entry);
+};
+
+const extractMcpServerStatusList = (value: unknown): AppServerMcpServerStatus[] => {
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is AppServerMcpServerStatus => isRecord(entry));
+  }
+  if (!isRecord(value)) {
+    return [];
+  }
+
+  const fromData = getArray(value.data).filter((entry): entry is AppServerMcpServerStatus => isRecord(entry));
+  if (fromData.length > 0) {
+    return fromData;
+  }
+
+  const fromServers = getArray(value.servers).filter(
+    (entry): entry is AppServerMcpServerStatus => isRecord(entry)
+  );
+  if (fromServers.length > 0) {
+    return fromServers;
+  }
+
+  return [];
 };
 
 export function expandHomePath(input: string): string {
@@ -832,6 +859,15 @@ export class CodexRuntime {
       cwd: this.vaultPath || undefined,
     });
     return extractCollaborationModeList(result);
+  }
+
+  async listMcpServerStatus(): Promise<AppServerMcpServerStatus[]> {
+    await this.ensureReady();
+    const client = this.getClient();
+    const result = await client.sendRequest('mcpServerStatus/list', {
+      cwd: this.vaultPath || undefined,
+    });
+    return extractMcpServerStatusList(result);
   }
 
   async startTurn(
