@@ -23,6 +23,7 @@ export interface CodexRunHandlers {
   onDelta: (delta: string) => void;
   onMessage: (message: string) => void;
   onItemStarted?: (item: AppServerItem) => void;
+  onCommandExecutionOutputDelta?: (delta: string, turnId: string) => void;
   onItemCompleted?: (item: AppServerItem) => void;
   onError: (message: string) => void;
   onComplete: () => void;
@@ -582,6 +583,7 @@ export class CodexRuntime {
     let turnId = '';
     const buffered: JsonRpcNotification[] = [];
     const onItemStarted = handlers.onItemStarted ?? (() => undefined);
+    const onCommandExecutionOutputDelta = handlers.onCommandExecutionOutputDelta ?? (() => undefined);
     const onItemCompleted = handlers.onItemCompleted ?? (() => undefined);
     const handleNotification = (notification: JsonRpcNotification): void => {
       const { method, params } = notification;
@@ -614,6 +616,15 @@ export class CodexRuntime {
             handlers.onMessage(text);
           }
         }
+        return;
+      }
+
+      if (method === 'item/commandExecution/outputDelta') {
+        const eventTurnId = getString(paramsRecord?.turnId);
+        if (eventTurnId !== turnId) return;
+        const delta = getString(paramsRecord?.delta);
+        if (!delta) return;
+        onCommandExecutionOutputDelta(delta, eventTurnId);
         return;
       }
 

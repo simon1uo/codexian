@@ -14,6 +14,7 @@ import type {
 } from '../../core/types';
 import { normalizeModelSelection } from '../../utils/env';
 import { MessageRenderer } from './rendering/MessageRenderer';
+import { ItemCardRenderer } from './rendering/ItemCardRenderer';
 import { createIconButton } from '../../shared/components/iconButton';
 import { setIcon } from '../../shared/icons';
 import { ConversationController } from './controllers/ConversationController';
@@ -233,6 +234,7 @@ export class CodexianView extends ItemView {
   private state: ChatState = { ...DEFAULT_CHAT_STATE };
   private models: AppServerModel[] = [];
   private renderer: MessageRenderer | null = null;
+  private itemCardRenderer: ItemCardRenderer | null = null;
   private conversationController: ConversationController;
 
   constructor(leaf: WorkspaceLeaf, plugin: CodexianPlugin) {
@@ -271,6 +273,7 @@ export class CodexianView extends ItemView {
       this.copyMessage.bind(this),
       this.renderMarkdown.bind(this)
     );
+    this.itemCardRenderer = new ItemCardRenderer(this.messagesEl);
 
     const inputContainer = root.createDiv({ cls: 'codexian-input-container' });
 
@@ -440,6 +443,7 @@ export class CodexianView extends ItemView {
   private renderMessages(): void {
     if (!this.messagesEl || !this.conversation || !this.renderer) return;
     this.renderer.renderMessages(this.conversation.messages, (message) => this.appendMessage(message));
+    this.itemCardRenderer?.reset();
     this.scrollToBottom();
   }
 
@@ -558,6 +562,7 @@ export class CodexianView extends ItemView {
       const model = conversation.model;
       const effort = conversation.reasoningEffort;
       const { approvalPolicy, sandboxPolicy } = this.getModePolicies(conversation.mode);
+      this.itemCardRenderer?.beginTurn();
       await this.plugin.runtime.startTurn(threadId, prompt, {
         onStart: (turnId) => {
           this.state.activeTurnId = turnId || null;
@@ -573,6 +578,18 @@ export class CodexianView extends ItemView {
         onMessage: (message) => {
           assistantMessage.content = message;
           this.updateMessage(assistantMessage);
+          this.scrollToBottom();
+        },
+        onItemStarted: (item) => {
+          this.itemCardRenderer?.handleItemStarted(item);
+          this.scrollToBottom();
+        },
+        onCommandExecutionOutputDelta: (delta) => {
+          this.itemCardRenderer?.handleCommandExecutionOutputDelta(delta);
+          this.scrollToBottom();
+        },
+        onItemCompleted: (item) => {
+          this.itemCardRenderer?.handleItemCompleted(item);
           this.scrollToBottom();
         },
         onError: (message) => {
