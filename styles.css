@@ -138,6 +138,99 @@
   gap: 12px;
 }
 
+.codexian-review-pane {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-secondary);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.codexian-review-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.codexian-review-title {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.codexian-review-scope-input {
+  width: 170px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  padding: 4px 6px;
+  font-size: 0.8em;
+}
+
+.codexian-review-diff {
+  margin: 0;
+  max-height: 140px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  padding: 8px;
+  white-space: pre;
+  font-family: var(--font-monospace);
+  font-size: 0.75em;
+}
+
+.codexian-review-comments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.codexian-review-comment-empty {
+  font-size: 0.78em;
+  color: var(--text-faint);
+}
+
+.codexian-review-comment-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.78em;
+}
+
+.codexian-review-comment-scope {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.codexian-review-comment-text {
+  color: var(--text-normal);
+}
+
+.codexian-review-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.codexian-review-comment-input {
+  width: 100%;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  padding: 6px 8px;
+  resize: vertical;
+  font-size: 0.82em;
+}
+
+.codexian-review-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .codexian-message {
   display: flex;
   flex-direction: column;

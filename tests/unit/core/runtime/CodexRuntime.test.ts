@@ -313,6 +313,44 @@ describe('CodexRuntime', () => {
     await waitFor(() => onComplete.mock.calls.length === 1);
   });
 
+  it('routes turn/diff/updated notifications to onDiffUpdated handler', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('safe'), '/vault');
+    const readyPromise = runtime.ensureReady();
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    const onDiffUpdated = jest.fn();
+    const onComplete = jest.fn();
+
+    const turnPromise = runtime.startTurn('thread-1', 'Review latest changes', {
+      onStart: () => undefined,
+      onDelta: () => undefined,
+      onMessage: () => undefined,
+      onDiffUpdated,
+      onError: () => undefined,
+      onComplete,
+    });
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'turn/start'));
+    fake.stdout.write(`${JSON.stringify({ id: 2, result: { turn: { id: 'turn-11' } } })}\n`);
+    await expect(turnPromise).resolves.toBeUndefined();
+
+    fake.stdout.write(
+      `${JSON.stringify({ method: 'turn/diff/updated', params: { turnId: 'turn-11', diff: '--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new' } })}\n`
+    );
+
+    await waitFor(() => onDiffUpdated.mock.calls.length === 1);
+    expect(onDiffUpdated).toHaveBeenCalledWith('--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new', 'turn-11');
+
+    fake.stdout.write(`${JSON.stringify({ method: 'turn/completed', params: { turn: { id: 'turn-11', status: 'completed' } } })}\n`);
+    await waitFor(() => onComplete.mock.calls.length === 1);
+  });
+
   it('sends turn/steer request with expectedTurnId and text input', async () => {
     const fake = createFakeChild();
     mockSpawn.mockReturnValue(fake.child);

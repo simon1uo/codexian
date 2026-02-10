@@ -27,6 +27,7 @@ export interface CodexRunHandlers {
   onCommandExecutionOutputDelta?: (delta: string, turnId: string) => void;
   onItemCompleted?: (item: AppServerItem) => void;
   onPlanUpdated?: (plan: unknown, turnId: string) => void;
+  onDiffUpdated?: (diff: unknown, turnId: string) => void;
   onError: (message: string) => void;
   onComplete: () => void;
 }
@@ -745,6 +746,7 @@ export class CodexRuntime {
     const onCommandExecutionOutputDelta = handlers.onCommandExecutionOutputDelta ?? (() => undefined);
     const onItemCompleted = handlers.onItemCompleted ?? (() => undefined);
     const onPlanUpdated = handlers.onPlanUpdated ?? (() => undefined);
+    const onDiffUpdated = handlers.onDiffUpdated ?? (() => undefined);
     const handleNotification = (notification: JsonRpcNotification): void => {
       const { method, params } = notification;
       const paramsRecord = isRecord(params) ? params : undefined;
@@ -801,6 +803,15 @@ export class CodexRuntime {
         const eventTurnId = getString(paramsRecord?.turnId);
         if (eventTurnId !== turnId) return;
         onPlanUpdated(paramsRecord?.plan, eventTurnId);
+        return;
+      }
+
+      if (method === 'turn/diff/updated') {
+        const eventTurnId = getString(paramsRecord?.turnId);
+        if (eventTurnId !== turnId) return;
+        const diffPayload =
+          paramsRecord?.diff ?? paramsRecord?.unifiedDiff ?? paramsRecord?.patch ?? paramsRecord?.changes;
+        onDiffUpdated(diffPayload, eventTurnId);
         return;
       }
 

@@ -26,6 +26,7 @@ import { ConversationController } from './controllers/ConversationController';
 import { DEFAULT_CHAT_STATE, type ChatState } from './state/ChatState';
 import { buildPromptWithContext } from './context/PromptContext';
 import { buildPlanModePrompt } from './context/PlanModePrompt';
+import { buildPromptWithReviewComments, type ReviewPromptComment } from './context/ReviewCommentsPrompt';
 import { applyMention, extractMentionedPaths, getMentionState } from '../../shared/mention/MentionHelpers';
 
 export const VIEW_TYPE_CODEXIAN = 'codexian-view';
@@ -79,6 +80,11 @@ interface PendingImageAttachment {
   name: string;
   path: string;
   isTemp: boolean;
+}
+
+interface ReviewPaneDiff {
+  turnId: string;
+  text: string;
 }
 
 class SessionManagerModal extends Modal {
@@ -383,10 +389,16 @@ export class CodexianView extends ItemView {
   private conversationController: ConversationController;
   private mentionDropdownEl: HTMLDivElement | null = null;
   private attachmentListEl: HTMLDivElement | null = null;
+  private reviewDiffEl: HTMLPreElement | null = null;
+  private reviewScopeInputEl: HTMLInputElement | null = null;
+  private reviewCommentInputEl: HTMLTextAreaElement | null = null;
+  private reviewCommentListEl: HTMLDivElement | null = null;
   private mentionOptions: string[] = [];
   private mentionSelectedIndex = 0;
   private isPlanMode = false;
   private lastPlanSignature: string | null = null;
+  private lastTurnDiff: ReviewPaneDiff | null = null;
+  private reviewComments: ReviewPromptComment[] = [];
   private pendingImageAttachments: PendingImageAttachment[] = [];
   private pendingApprovals = new Set<{
     resolve: (decision: ApprovalRequestDecision) => void;
@@ -430,6 +442,54 @@ export class CodexianView extends ItemView {
       this.renderMarkdown.bind(this)
     );
     this.itemCardRenderer = new ItemCardRenderer(this.messagesEl);
+
+    const reviewPane = root.createDiv({ cls: 'codexian-review-pane' });
+    const reviewHeader = reviewPane.createDiv({ cls: 'codexian-review-header' });
+    reviewHeader.createDiv({ cls: 'codexian-review-title', text: 'Last turn changes' });
+    this.reviewScopeInputEl = reviewHeader.createEl('input', {
+      cls: 'codexian-review-scope-input',
+      attr: {
+        type: 'text',
+        placeholder: 'Scope (optional)',
+      },
+    });
+    this.reviewDiffEl = reviewPane.createEl('pre', {
+      cls: 'codexian-review-diff',
+      text: 'No diff from last turn yet.',
+    });
+    this.reviewCommentListEl = reviewPane.createDiv({ cls: 'codexian-review-comments-list' });
+
+    const reviewCompose = reviewPane.createDiv({ cls: 'codexian-review-compose' });
+    this.reviewCommentInputEl = reviewCompose.createEl('textarea', {
+      cls: 'codexian-review-comment-input',
+      attr: {
+        placeholder: 'Add a review comment for the next prompt',
+      },
+    });
+    this.reviewCommentInputEl.rows = 2;
+    const reviewActions = reviewCompose.createDiv({ cls: 'codexian-review-actions' });
+    const addReviewCommentButton = reviewActions.createEl('button', {
+      text: 'Add comment',
+      attr: { type: 'button' },
+    });
+    const clearReviewCommentsButton = reviewActions.createEl('button', {
+      text: 'Clear comments',
+      attr: { type: 'button' },
+    });
+    addReviewCommentButton.addEventListener('click', () => {
+      this.addReviewComment();
+    });
+    clearReviewCommentsButton.addEventListener('click', () => {
+      this.clearReviewComments();
+    });
+    this.reviewCommentInputEl.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.shiftKey) {
+        return;
+      }
+      event.preventDefault();
+      this.addReviewComment();
+    });
+    this.renderReviewComments();
 
     const inputContainer = root.createDiv({ cls: 'codexian-input-container' });
 
@@ -739,11 +799,13 @@ export class CodexianView extends ItemView {
     const forcedPrompt = options?.forcedPrompt;
     const prompt = (forcedPrompt ?? this.inputEl.value).trim();
     if (!prompt) return;
+    const reviewComments = this.consumeReviewCommentsForSend();
+    const promptWithReviewComments = buildPromptWithReviewComments(prompt, reviewComments);
     const imageAttachments = [...this.pendingImageAttachments];
     const imagePaths = imageAttachments.map((attachment) => attachment.path);
     this.hideMentionDropdown();
 
-    const packedPromptBase = await this.buildPromptForSend(prompt);
+    const packedPromptBase = await this.buildPromptForSend(promptWithReviewComments);
     const packedPrompt = buildPlanModePrompt(
       packedPromptBase,
       this.isPlanMode && !options?.bypassPlanMode
@@ -839,6 +901,9 @@ export class CodexianView extends ItemView {
         onPlanUpdated: (plan) => {
           this.renderPlanUpdateCard(plan);
           this.scrollToBottom();
+        },
+        onDiffUpdated: (diff, turnId) => {
+          this.updateReviewDiff(diff, turnId);
         },
         onError: (message) => {
           const cleaned = message.trim();
@@ -1086,6 +1151,87 @@ export class CodexianView extends ItemView {
       mentionedFiles,
       limits: PROMPT_CONTEXT_LIMITS,
     });
+  }
+
+  private updateReviewDiff(diff: unknown, turnId: string): void {
+    const diffText = this.extractUnifiedDiffText(diff);
+    if (!diffText) {
+      return;
+    }
+    this.lastTurnDiff = { turnId, text: diffText };
+    if (!this.reviewDiffEl) {
+      return;
+    }
+    this.reviewDiffEl.textContent = diffText;
+  }
+
+  private extractUnifiedDiffText(diff: unknown): string {
+    if (typeof diff === 'string') {
+      return diff.trim();
+    }
+    if (!isRecord(diff)) {
+      return '';
+    }
+
+    const candidateKeys = ['unifiedDiff', 'diff', 'patch', 'text', 'content'];
+    for (const key of candidateKeys) {
+      const value = diff[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+
+    try {
+      return JSON.stringify(diff, null, 2);
+    } catch {
+      return '';
+    }
+  }
+
+  private addReviewComment(): void {
+    const text = this.reviewCommentInputEl?.value.trim() ?? '';
+    if (!text) {
+      return;
+    }
+    const fallbackScope = this.lastTurnDiff?.turnId ? `turn:${this.lastTurnDiff.turnId}` : 'general';
+    const scope = this.reviewScopeInputEl?.value.trim() || fallbackScope;
+    this.reviewComments.push({ scope, text });
+    if (this.reviewCommentInputEl) {
+      this.reviewCommentInputEl.value = '';
+    }
+    this.renderReviewComments();
+  }
+
+  private clearReviewComments(): void {
+    this.reviewComments = [];
+    this.renderReviewComments();
+  }
+
+  private consumeReviewCommentsForSend(): ReviewPromptComment[] {
+    const comments = [...this.reviewComments];
+    this.reviewComments = [];
+    this.renderReviewComments();
+    return comments;
+  }
+
+  private renderReviewComments(): void {
+    if (!this.reviewCommentListEl) {
+      return;
+    }
+    this.reviewCommentListEl.empty();
+    if (this.reviewComments.length === 0) {
+      this.reviewCommentListEl.createDiv({
+        cls: 'codexian-review-comment-empty',
+        text: 'No review comments queued.',
+      });
+      return;
+    }
+
+    for (const comment of this.reviewComments) {
+      const row = this.reviewCommentListEl.createDiv({ cls: 'codexian-review-comment-row' });
+      row.createSpan({ cls: 'codexian-review-comment-scope', text: comment.scope?.trim() || 'general' });
+      row.createSpan({ cls: 'codexian-review-comment-text', text: comment.text });
+    }
   }
 
   private togglePlanMode(): void {
