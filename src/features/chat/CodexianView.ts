@@ -27,6 +27,13 @@ import { DEFAULT_CHAT_STATE, type ChatState } from './state/ChatState';
 import { buildPromptWithContext } from './context/PromptContext';
 import { buildPlanModePrompt } from './context/PlanModePrompt';
 import { buildPromptWithReviewComments, type ReviewPromptComment } from './context/ReviewCommentsPrompt';
+import {
+  applySlashCommand,
+  expandSlashCommandPrompt,
+  getAvailableSlashCommands,
+  getSlashCommandState,
+  type SlashCommand,
+} from './context/SlashCommands';
 import { applyMention, extractMentionedPaths, getMentionState } from '../../shared/mention/MentionHelpers';
 
 export const VIEW_TYPE_CODEXIAN = 'codexian-view';
@@ -65,6 +72,7 @@ const PROMPT_CONTEXT_LIMITS = {
 } as const;
 
 const MENTION_SUGGESTION_LIMIT = 8;
+const SLASH_COMMAND_SUGGESTION_LIMIT = 8;
 const MAX_IMAGE_ATTACHMENTS_PER_TURN = 3;
 const PLAN_MODE_FEEDBACK_PROMPT_TITLE = 'Plan feedback';
 
@@ -388,13 +396,16 @@ export class CodexianView extends ItemView {
   private itemCardRenderer: ItemCardRenderer | null = null;
   private conversationController: ConversationController;
   private mentionDropdownEl: HTMLDivElement | null = null;
+  private slashDropdownEl: HTMLDivElement | null = null;
   private attachmentListEl: HTMLDivElement | null = null;
   private reviewDiffEl: HTMLPreElement | null = null;
   private reviewScopeInputEl: HTMLInputElement | null = null;
   private reviewCommentInputEl: HTMLTextAreaElement | null = null;
   private reviewCommentListEl: HTMLDivElement | null = null;
   private mentionOptions: string[] = [];
+  private slashOptions: SlashCommand[] = [];
   private mentionSelectedIndex = 0;
+  private slashSelectedIndex = 0;
   private isPlanMode = false;
   private lastPlanSignature: string | null = null;
   private lastTurnDiff: ReviewPaneDiff | null = null;
@@ -500,6 +511,8 @@ export class CodexianView extends ItemView {
     });
     this.mentionDropdownEl = inputRow.createDiv({ cls: 'codexian-mention-dropdown' });
     this.mentionDropdownEl.hide();
+    this.slashDropdownEl = inputRow.createDiv({ cls: 'codexian-mention-dropdown codexian-slash-dropdown' });
+    this.slashDropdownEl.hide();
     this.attachmentListEl = inputContainer.createDiv({ cls: 'codexian-attachment-list' });
 
     const bottomToolbar = inputContainer.createDiv({ cls: 'codexian-input-toolbar codexian-input-toolbar-bottom' });
@@ -601,6 +614,9 @@ export class CodexianView extends ItemView {
       if (this.handleMentionKeydown(event)) {
         return;
       }
+      if (this.handleSlashCommandKeydown(event)) {
+        return;
+      }
       if (event.key !== 'Enter') return;
       if (event.ctrlKey && event.metaKey) {
         event.preventDefault();
@@ -613,17 +629,23 @@ export class CodexianView extends ItemView {
     this.inputEl.addEventListener('input', () => {
       this.updateSendState();
       this.refreshMentionDropdown();
+      this.refreshSlashCommandDropdown();
     });
     this.inputEl.addEventListener('click', () => {
       this.refreshMentionDropdown();
+      this.refreshSlashCommandDropdown();
     });
     this.inputEl.addEventListener('keyup', (event) => {
       if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
         this.refreshMentionDropdown();
+        this.refreshSlashCommandDropdown();
       }
     });
     this.inputEl.addEventListener('blur', () => {
-      window.setTimeout(() => this.hideMentionDropdown(), 80);
+      window.setTimeout(() => {
+        this.hideMentionDropdown();
+        this.hideSlashCommandDropdown();
+      }, 80);
     });
     this.inputEl.addEventListener('dragover', (event) => {
       event.preventDefault();
@@ -820,11 +842,13 @@ export class CodexianView extends ItemView {
     const forcedPrompt = options?.forcedPrompt;
     const prompt = (forcedPrompt ?? this.inputEl.value).trim();
     if (!prompt) return;
+    const expandedPrompt = forcedPrompt ? prompt : expandSlashCommandPrompt(prompt, this.getSlashCommands());
     const reviewComments = this.consumeReviewCommentsForSend();
-    const promptWithReviewComments = buildPromptWithReviewComments(prompt, reviewComments);
+    const promptWithReviewComments = buildPromptWithReviewComments(expandedPrompt, reviewComments);
     const imageAttachments = [...this.pendingImageAttachments];
     const imagePaths = imageAttachments.map((attachment) => attachment.path);
     this.hideMentionDropdown();
+    this.hideSlashCommandDropdown();
 
     const packedPromptBase = await this.buildPromptForSend(promptWithReviewComments);
     const packedPrompt = buildPlanModePrompt(
@@ -1051,6 +1075,42 @@ export class CodexianView extends ItemView {
     return false;
   }
 
+  private handleSlashCommandKeydown(event: KeyboardEvent): boolean {
+    if (!this.slashDropdownEl || this.slashDropdownEl.hidden || this.slashOptions.length === 0) {
+      if (event.key === 'Escape' && this.slashDropdownEl && !this.slashDropdownEl.hidden) {
+        event.preventDefault();
+        this.hideSlashCommandDropdown();
+        return true;
+      }
+      return false;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      this.slashSelectedIndex = (this.slashSelectedIndex + 1) % this.slashOptions.length;
+      this.renderSlashCommandDropdown();
+      return true;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      this.slashSelectedIndex = (this.slashSelectedIndex - 1 + this.slashOptions.length) % this.slashOptions.length;
+      this.renderSlashCommandDropdown();
+      return true;
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault();
+      this.applySelectedSlashCommand(this.slashSelectedIndex);
+      return true;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.hideSlashCommandDropdown();
+      return true;
+    }
+
+    return false;
+  }
+
   private refreshMentionDropdown(): void {
     if (!this.inputEl) return;
 
@@ -1074,6 +1134,29 @@ export class CodexianView extends ItemView {
     this.renderMentionDropdown();
   }
 
+  private refreshSlashCommandDropdown(): void {
+    if (!this.inputEl) return;
+
+    const cursor = this.inputEl.selectionStart ?? this.inputEl.value.length;
+    const slashState = getSlashCommandState(this.inputEl.value, cursor);
+    if (!slashState) {
+      this.hideSlashCommandDropdown();
+      return;
+    }
+
+    const options = this.getSlashCommandCandidates(slashState.query);
+    if (options.length === 0) {
+      this.hideSlashCommandDropdown();
+      return;
+    }
+
+    this.slashOptions = options;
+    if (this.slashSelectedIndex >= this.slashOptions.length) {
+      this.slashSelectedIndex = 0;
+    }
+    this.renderSlashCommandDropdown();
+  }
+
   private getMentionCandidates(rawQuery: string): string[] {
     const query = rawQuery.trim().toLowerCase();
     const files = this.app.vault.getFiles().map((file) => file.path);
@@ -1092,6 +1175,37 @@ export class CodexianView extends ItemView {
     });
 
     return matches.slice(0, MENTION_SUGGESTION_LIMIT);
+  }
+
+  private getSlashCommands(): SlashCommand[] {
+    const settings = this.plugin.settings as unknown as { slashCommands?: SlashCommand[] };
+    const userDefined = Array.isArray(settings.slashCommands) ? settings.slashCommands : [];
+    return getAvailableSlashCommands(userDefined);
+  }
+
+  private getSlashCommandCandidates(rawQuery: string): SlashCommand[] {
+    const query = rawQuery.trim().toLowerCase();
+    const commands = this.getSlashCommands();
+    const matches = commands.filter((command) => {
+      if (!query) {
+        return true;
+      }
+      const name = command.name.toLowerCase();
+      const description = command.description.toLowerCase();
+      return name.includes(query) || description.includes(query);
+    });
+    matches.sort((a, b) => {
+      if (!query) {
+        return a.name.localeCompare(b.name);
+      }
+      const aStarts = a.name.toLowerCase().startsWith(query);
+      const bStarts = b.name.toLowerCase().startsWith(query);
+      if (aStarts !== bStarts) {
+        return aStarts ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+    return matches.slice(0, SLASH_COMMAND_SUGGESTION_LIMIT);
   }
 
   private renderMentionDropdown(): void {
@@ -1123,6 +1237,35 @@ export class CodexianView extends ItemView {
     this.mentionDropdownEl.show();
   }
 
+  private renderSlashCommandDropdown(): void {
+    if (!this.slashDropdownEl) return;
+
+    this.slashDropdownEl.empty();
+    if (this.slashOptions.length === 0) {
+      this.hideSlashCommandDropdown();
+      return;
+    }
+
+    for (let i = 0; i < this.slashOptions.length; i += 1) {
+      const option = this.slashOptions[i];
+      if (!option) continue;
+      const optionEl = this.slashDropdownEl.createEl('button', {
+        cls: 'codexian-mention-option',
+        text: `/${option.name} - ${option.description}`,
+        attr: { type: 'button' },
+      });
+      if (i === this.slashSelectedIndex) {
+        optionEl.addClass('is-selected');
+      }
+      optionEl.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        this.applySelectedSlashCommand(i);
+      });
+    }
+
+    this.slashDropdownEl.show();
+  }
+
   private applySelectedMention(index: number): void {
     if (!this.inputEl) return;
     const filePath = this.mentionOptions[index];
@@ -1138,12 +1281,35 @@ export class CodexianView extends ItemView {
     this.inputEl.focus();
   }
 
+  private applySelectedSlashCommand(index: number): void {
+    if (!this.inputEl) return;
+    const command = this.slashOptions[index];
+    if (!command) return;
+
+    const cursor = this.inputEl.selectionStart ?? this.inputEl.value.length;
+    const applied = applySlashCommand(this.inputEl.value, cursor, command.name);
+    this.inputEl.value = applied.text;
+    this.inputEl.selectionStart = applied.cursor;
+    this.inputEl.selectionEnd = applied.cursor;
+    this.updateSendState();
+    this.hideSlashCommandDropdown();
+    this.inputEl.focus();
+  }
+
   private hideMentionDropdown(): void {
     this.mentionOptions = [];
     this.mentionSelectedIndex = 0;
     if (!this.mentionDropdownEl) return;
     this.mentionDropdownEl.empty();
     this.mentionDropdownEl.hide();
+  }
+
+  private hideSlashCommandDropdown(): void {
+    this.slashOptions = [];
+    this.slashSelectedIndex = 0;
+    if (!this.slashDropdownEl) return;
+    this.slashDropdownEl.empty();
+    this.slashDropdownEl.hide();
   }
 
   private async buildPromptForSend(userPrompt: string): Promise<string> {
