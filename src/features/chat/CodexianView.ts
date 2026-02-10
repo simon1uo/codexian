@@ -1,4 +1,6 @@
 import * as path from 'path';
+import * as fs from 'fs/promises';
+import * as os from 'os';
 import type { WorkspaceLeaf } from 'obsidian';
 import { ItemView, MarkdownRenderer, MarkdownView, Menu, Modal, Notice, Setting, TFile } from 'obsidian';
 
@@ -60,6 +62,14 @@ const PROMPT_CONTEXT_LIMITS = {
 } as const;
 
 const MENTION_SUGGESTION_LIMIT = 8;
+const MAX_IMAGE_ATTACHMENTS_PER_TURN = 3;
+
+interface PendingImageAttachment {
+  id: string;
+  name: string;
+  path: string;
+  isTemp: boolean;
+}
 
 class SessionManagerModal extends Modal {
   private plugin: CodexianPlugin;
@@ -231,7 +241,43 @@ class RollbackModal extends Modal {
   }
 }
 
+class ImagePathModal extends Modal {
+  private onConfirm: (imagePath: string) => void;
+
+  constructor(plugin: CodexianPlugin, onConfirm: (imagePath: string) => void) {
+    super(plugin.app);
+    this.onConfirm = onConfirm;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: 'Attach image path' });
+
+    let imagePath = '';
+    new Setting(contentEl)
+      .setName('Image path')
+      .addText((text) => {
+        text.setPlaceholder('/absolute/or/relative/path/to/image.png');
+        text.onChange((value) => {
+          imagePath = value;
+        });
+      });
+
+    const actions = contentEl.createDiv({ cls: 'codexian-modal-actions' });
+    const cancelBtn = actions.createEl('button', { text: 'Cancel' });
+    const confirmBtn = actions.createEl('button', { text: 'Attach' });
+
+    cancelBtn.addEventListener('click', () => this.close());
+    confirmBtn.addEventListener('click', () => {
+      this.onConfirm(imagePath.trim());
+      this.close();
+    });
+  }
+}
+
 void RollbackModal;
+void ImagePathModal;
 
 export class CodexianView extends ItemView {
   private plugin: CodexianPlugin;
@@ -250,8 +296,10 @@ export class CodexianView extends ItemView {
   private itemCardRenderer: ItemCardRenderer | null = null;
   private conversationController: ConversationController;
   private mentionDropdownEl: HTMLDivElement | null = null;
+  private attachmentListEl: HTMLDivElement | null = null;
   private mentionOptions: string[] = [];
   private mentionSelectedIndex = 0;
+  private pendingImageAttachments: PendingImageAttachment[] = [];
   private pendingApprovals = new Set<{
     resolve: (decision: ApprovalRequestDecision) => void;
     cardEl: HTMLElement;
@@ -304,6 +352,7 @@ export class CodexianView extends ItemView {
     });
     this.mentionDropdownEl = inputRow.createDiv({ cls: 'codexian-mention-dropdown' });
     this.mentionDropdownEl.hide();
+    this.attachmentListEl = inputContainer.createDiv({ cls: 'codexian-attachment-list' });
 
     const bottomToolbar = inputContainer.createDiv({ cls: 'codexian-input-toolbar codexian-input-toolbar-bottom' });
     const toolbarBottomLeft = bottomToolbar.createDiv({ cls: 'codexian-toolbar-left' });
@@ -356,6 +405,15 @@ export class CodexianView extends ItemView {
       this.openReasoningMenu(event);
     });
 
+    const imagePathButton = createIconButton(toolbarBottomLeft, 'paperclip', {
+      ariaLabel: 'Attach image by path',
+      className: 'codexian-action-btn codexian-icon-btn',
+      tooltip: 'Attach image by path',
+    });
+    imagePathButton.addEventListener('click', () => {
+      void this.promptImagePathAttachment();
+    });
+
     this.sendButtonEl = createIconButton(toolbarRight, 'arrow-up', {
       ariaLabel: 'Enter a message to get started.',
       className: 'codexian-send codexian-icon-btn',
@@ -395,6 +453,16 @@ export class CodexianView extends ItemView {
     });
     this.inputEl.addEventListener('blur', () => {
       window.setTimeout(() => this.hideMentionDropdown(), 80);
+    });
+    this.inputEl.addEventListener('dragover', (event) => {
+      event.preventDefault();
+    });
+    this.inputEl.addEventListener('drop', (event) => {
+      event.preventDefault();
+      void this.handleDroppedImages(event.dataTransfer?.files ?? null);
+    });
+    this.inputEl.addEventListener('paste', (event) => {
+      void this.handlePastedImages(event.clipboardData?.files ?? null);
     });
 
     root.createDiv({ cls: 'codexian-input-hint', text: '' });
@@ -559,6 +627,8 @@ export class CodexianView extends ItemView {
 
     const prompt = this.inputEl.value.trim();
     if (!prompt) return;
+    const imageAttachments = [...this.pendingImageAttachments];
+    const imagePaths = imageAttachments.map((attachment) => attachment.path);
     this.hideMentionDropdown();
 
     const packedPrompt = await this.buildPromptForSend(prompt);
@@ -591,6 +661,8 @@ export class CodexianView extends ItemView {
     this.scrollToBottom();
 
     this.inputEl.value = '';
+    this.pendingImageAttachments = [];
+    this.renderAttachmentList();
     this.state.isRunning = true;
     this.state.cancelRequested = false;
     this.state.activeTurnId = null;
@@ -664,9 +736,10 @@ export class CodexianView extends ItemView {
             this.setStatus('Idle', 'idle');
           }
           this.updateSendState();
+          void this.cleanupTempAttachmentFiles(imageAttachments);
           void this.plugin.saveConversation(conversation);
         },
-      }, model, effort, approvalPolicy, sandboxPolicy);
+      }, model, effort, approvalPolicy, sandboxPolicy, imagePaths);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error.';
       assistantMessage.content = `Error: ${message}`;
@@ -676,6 +749,7 @@ export class CodexianView extends ItemView {
       this.state.activeTurnId = null;
       this.state.cancelRequested = false;
       this.updateSendState();
+      void this.cleanupTempAttachmentFiles(imageAttachments);
     }
   }
 
@@ -871,6 +945,184 @@ export class CodexianView extends ItemView {
       mentionedFiles,
       limits: PROMPT_CONTEXT_LIMITS,
     });
+  }
+
+  private renderAttachmentList(): void {
+    if (!this.attachmentListEl) return;
+    this.attachmentListEl.empty();
+
+    for (const attachment of this.pendingImageAttachments) {
+      const row = this.attachmentListEl.createDiv({ cls: 'codexian-attachment-item' });
+      row.createSpan({ cls: 'codexian-attachment-name', text: attachment.name });
+      const removeButton = row.createEl('button', {
+        cls: 'codexian-attachment-remove',
+        text: 'Remove',
+        attr: { type: 'button' },
+      });
+      removeButton.addEventListener('click', () => {
+        void this.removeAttachmentById(attachment.id);
+      });
+    }
+  }
+
+  private canAddMoreAttachments(): boolean {
+    return this.pendingImageAttachments.length < MAX_IMAGE_ATTACHMENTS_PER_TURN;
+  }
+
+  private nextAttachmentId(): string {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  private getExtensionForMimeType(mimeType: string): string {
+    const normalized = mimeType.toLowerCase();
+    if (normalized === 'image/jpeg') return '.jpg';
+    if (normalized === 'image/png') return '.png';
+    if (normalized === 'image/gif') return '.gif';
+    if (normalized === 'image/webp') return '.webp';
+    if (normalized === 'image/bmp') return '.bmp';
+    if (normalized === 'image/svg+xml') return '.svg';
+    return '.img';
+  }
+
+  private async persistImageFileToTemp(file: File): Promise<{ filePath: string; name: string }> {
+    const tempDir = path.join(os.tmpdir(), 'codexian-images');
+    await fs.mkdir(tempDir, { recursive: true });
+    const extension = this.getExtensionForMimeType(file.type || '');
+    const fileName = `codexian-${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`;
+    const filePath = path.join(tempDir, fileName);
+    const arrayBuffer = await file.arrayBuffer();
+    await fs.writeFile(filePath, Buffer.from(arrayBuffer));
+    const fallbackName = path.basename(filePath);
+    return { filePath, name: file.name || fallbackName };
+  }
+
+  private async addAttachment(attachment: Omit<PendingImageAttachment, 'id'>): Promise<void> {
+    if (!this.canAddMoreAttachments()) {
+      if (attachment.isTemp) {
+        await fs.unlink(attachment.path).catch(() => undefined);
+      }
+      new Notice(`You can attach up to ${MAX_IMAGE_ATTACHMENTS_PER_TURN} images per turn.`);
+      return;
+    }
+    this.pendingImageAttachments.push({
+      id: this.nextAttachmentId(),
+      name: attachment.name,
+      path: attachment.path,
+      isTemp: attachment.isTemp,
+    });
+    this.renderAttachmentList();
+    this.updateSendState();
+  }
+
+  private async removeAttachmentById(id: string): Promise<void> {
+    const attachment = this.pendingImageAttachments.find((item) => item.id === id);
+    if (!attachment) return;
+    this.pendingImageAttachments = this.pendingImageAttachments.filter((item) => item.id !== id);
+    if (attachment.isTemp) {
+      await fs.unlink(attachment.path).catch(() => undefined);
+    }
+    this.renderAttachmentList();
+    this.updateSendState();
+  }
+
+  private isImageFileName(filePath: string): boolean {
+    const ext = path.extname(filePath).toLowerCase();
+    return ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'].includes(ext);
+  }
+
+  private async handleDroppedImages(fileList: FileList | null): Promise<void> {
+    if (!fileList || fileList.length === 0) return;
+    for (const file of Array.from(fileList)) {
+      if (!file.type.startsWith('image/')) continue;
+      if (!this.canAddMoreAttachments()) {
+        new Notice(`You can attach up to ${MAX_IMAGE_ATTACHMENTS_PER_TURN} images per turn.`);
+        break;
+      }
+      try {
+        const persisted = await this.persistImageFileToTemp(file);
+        await this.addAttachment({
+          name: persisted.name,
+          path: persisted.filePath,
+          isTemp: true,
+        });
+      } catch {
+        new Notice('Failed to attach dropped image.');
+      }
+    }
+  }
+
+  private async handlePastedImages(fileList: FileList | null): Promise<void> {
+    if (!fileList || fileList.length === 0) return;
+    for (const file of Array.from(fileList)) {
+      if (!file.type.startsWith('image/')) continue;
+      if (!this.canAddMoreAttachments()) {
+        new Notice(`You can attach up to ${MAX_IMAGE_ATTACHMENTS_PER_TURN} images per turn.`);
+        break;
+      }
+      try {
+        const persisted = await this.persistImageFileToTemp(file);
+        await this.addAttachment({
+          name: persisted.name,
+          path: persisted.filePath,
+          isTemp: true,
+        });
+      } catch {
+        new Notice('Failed to attach pasted image.');
+      }
+    }
+  }
+
+  private async promptImagePathAttachment(): Promise<void> {
+    if (this.state.isRunning) return;
+    const rawPath = await this.collectImagePathFromModal();
+    if (!rawPath) return;
+    const trimmed = rawPath.trim();
+    if (!trimmed) return;
+    const basePath = this.plugin.getVaultPathForFilter() || process.cwd();
+    const resolvedPath = path.isAbsolute(trimmed) ? trimmed : path.resolve(basePath, trimmed);
+
+    try {
+      const stat = await fs.stat(resolvedPath);
+      if (!stat.isFile()) {
+        new Notice('Path is not a file.');
+        return;
+      }
+    } catch {
+      new Notice('File does not exist.');
+      return;
+    }
+
+    if (!this.isImageFileName(resolvedPath)) {
+      new Notice('Only image files can be attached.');
+      return;
+    }
+
+    await this.addAttachment({
+      name: path.basename(resolvedPath),
+      path: resolvedPath,
+      isTemp: false,
+    });
+  }
+
+  private async collectImagePathFromModal(): Promise<string | null> {
+    return new Promise<string | null>((resolve) => {
+      const modal = new ImagePathModal(this.plugin, (value) => {
+        resolve(value || null);
+      });
+      const originalOnClose = modal.onClose.bind(modal);
+      modal.onClose = (): void => {
+        originalOnClose();
+        resolve(null);
+      };
+      modal.open();
+    });
+  }
+
+  private async cleanupTempAttachmentFiles(attachments: PendingImageAttachment[]): Promise<void> {
+    for (const attachment of attachments) {
+      if (!attachment.isTemp) continue;
+      await fs.unlink(attachment.path).catch(() => undefined);
+    }
   }
 
   private async resolveMentionedFiles(paths: string[]): Promise<Array<{ path: string; content: string }>> {

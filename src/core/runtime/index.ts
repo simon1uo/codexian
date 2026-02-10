@@ -56,6 +56,38 @@ export interface ApprovalRequestDecision {
   alwaysRule?: ApprovalRule;
 }
 
+export interface LocalImageInputItem {
+  type: 'localImage';
+  path: string;
+}
+
+export interface TextInputItem {
+  type: 'text';
+  text: string;
+}
+
+export type TurnInputItem = TextInputItem | LocalImageInputItem;
+
+export function buildTurnInputItems(prompt: string, localImagePaths: string[] = []): TurnInputItem[] {
+  const input: TurnInputItem[] = [
+    {
+      type: 'text',
+      text: prompt,
+    },
+  ];
+
+  for (const rawPath of localImagePaths) {
+    const imagePath = rawPath.trim();
+    if (!imagePath) continue;
+    input.push({
+      type: 'localImage',
+      path: imagePath,
+    });
+  }
+
+  return input;
+}
+
 export type ApprovalRequestHandler = (
   request: ApprovalRequest
 ) => Promise<ApprovalDecision | ApprovalRequestDecision>;
@@ -700,7 +732,8 @@ export class CodexRuntime {
     model?: string,
     reasoningEffort?: string,
     approvalPolicy?: ApprovalPolicy,
-    sandboxPolicy?: SandboxPolicy
+    sandboxPolicy?: SandboxPolicy,
+    localImagePaths: string[] = []
   ): Promise<void> {
     await this.ensureReady();
     const client = this.getClient();
@@ -782,12 +815,7 @@ export class CodexRuntime {
     try {
       const response = await client.sendRequest('turn/start', {
         threadId,
-        input: [
-          {
-            type: 'text',
-            text: prompt,
-          },
-        ],
+        input: buildTurnInputItems(prompt, localImagePaths),
         model: model || undefined,
         effort: reasoningEffort || undefined,
         approvalPolicy: approvalPolicy || undefined,

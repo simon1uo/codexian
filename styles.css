@@ -293,6 +293,46 @@
   align-items: stretch;
 }
 
+.codexian-attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 0;
+}
+
+.codexian-attachment-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: var(--background-primary);
+  max-width: 100%;
+}
+
+.codexian-attachment-name {
+  font-size: 0.8em;
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.codexian-attachment-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.75em;
+  padding: 0;
+  cursor: pointer;
+}
+
+.codexian-attachment-remove:hover {
+  color: var(--text-normal);
+}
+
 .codexian-model-select {
   padding: 6px 8px;
   border-radius: 8px;

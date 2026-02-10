@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 
-import { CodexRuntime } from '../../../../src/core/runtime';
+import { buildTurnInputItems, CodexRuntime } from '../../../../src/core/runtime';
 import type { CodexianSettings } from '../../../../src/core/types';
 
 jest.mock('child_process', () => ({
@@ -231,5 +231,57 @@ describe('CodexRuntime', () => {
     );
 
     expect(secondHandler).not.toHaveBeenCalled();
+  });
+
+  it('sends localImage input items when attachments are provided', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('safe'), '/vault');
+    const readyPromise = runtime.ensureReady();
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    const turnPromise = runtime.startTurn(
+      'thread-1',
+      'Describe this image',
+      {
+        onStart: () => undefined,
+        onDelta: () => undefined,
+        onMessage: () => undefined,
+        onError: () => undefined,
+        onComplete: () => undefined,
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      ['/tmp/one.png', '/tmp/two.jpg']
+    );
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'turn/start'));
+
+    const turnStartRequest = parseClientMessages(fake.writes).find((entry) => entry.method === 'turn/start');
+    const params = turnStartRequest?.params as { input?: unknown[] } | undefined;
+    expect(params?.input).toEqual([
+      { type: 'text', text: 'Describe this image' },
+      { type: 'localImage', path: '/tmp/one.png' },
+      { type: 'localImage', path: '/tmp/two.jpg' },
+    ]);
+
+    fake.stdout.write(`${JSON.stringify({ id: 2, result: { turn: { id: 'turn-1' } } })}\n`);
+    await expect(turnPromise).resolves.toBeUndefined();
+  });
+});
+
+describe('buildTurnInputItems', () => {
+  it('builds text + localImage items from prompt and attachment paths', () => {
+    expect(buildTurnInputItems('hello', ['/tmp/a.png', '  ', '/tmp/b.jpg'])).toEqual([
+      { type: 'text', text: 'hello' },
+      { type: 'localImage', path: '/tmp/a.png' },
+      { type: 'localImage', path: '/tmp/b.jpg' },
+    ]);
   });
 });
