@@ -56,6 +56,18 @@
   background: var(--background-modifier-hover);
 }
 
+.codexian-plan-mode-btn {
+  min-width: 68px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+
+.codexian-plan-mode-btn.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: transparent;
+}
+
 .codexian-icon-btn {
   width: 28px;
   height: 28px;
@@ -97,6 +109,21 @@
 
 .codexian-status-error {
   color: var(--text-error);
+}
+
+.codexian-plan-update-card {
+  align-self: stretch;
+}
+
+.codexian-plan-update-body {
+  white-space: normal;
+}
+
+.codexian-plan-update-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 10px;
 }
 
 .codexian-transcript {

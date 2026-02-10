@@ -11,6 +11,7 @@ import type {
   ApprovalRule,
   AppServerThread,
   ApprovalPolicy,
+  AppServerItem,
   ChatMessage,
   CodexianConversation,
   CodexianMode,
@@ -24,6 +25,7 @@ import { setIcon } from '../../shared/icons';
 import { ConversationController } from './controllers/ConversationController';
 import { DEFAULT_CHAT_STATE, type ChatState } from './state/ChatState';
 import { buildPromptWithContext } from './context/PromptContext';
+import { buildPlanModePrompt } from './context/PlanModePrompt';
 import { applyMention, extractMentionedPaths, getMentionState } from '../../shared/mention/MentionHelpers';
 
 export const VIEW_TYPE_CODEXIAN = 'codexian-view';
@@ -63,6 +65,14 @@ const PROMPT_CONTEXT_LIMITS = {
 
 const MENTION_SUGGESTION_LIMIT = 8;
 const MAX_IMAGE_ATTACHMENTS_PER_TURN = 3;
+const PLAN_MODE_FEEDBACK_PROMPT_TITLE = 'Plan feedback';
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const getString = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined);
+
+const getArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
 interface PendingImageAttachment {
   id: string;
@@ -276,8 +286,45 @@ class ImagePathModal extends Modal {
   }
 }
 
+class PlanFeedbackModal extends Modal {
+  private onConfirm: (feedback: string) => void;
+
+  constructor(plugin: CodexianPlugin, onConfirm: (feedback: string) => void) {
+    super(plugin.app);
+    this.onConfirm = onConfirm;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: PLAN_MODE_FEEDBACK_PROMPT_TITLE });
+
+    let feedback = '';
+    new Setting(contentEl)
+      .setName('Feedback')
+      .addTextArea((text) => {
+        text.setPlaceholder('Tell codex what to adjust in the plan.');
+        text.inputEl.rows = 4;
+        text.onChange((value) => {
+          feedback = value;
+        });
+      });
+
+    const actions = contentEl.createDiv({ cls: 'codexian-modal-actions' });
+    const cancelBtn = actions.createEl('button', { text: 'Cancel' });
+    const confirmBtn = actions.createEl('button', { text: 'Send' });
+
+    cancelBtn.addEventListener('click', () => this.close());
+    confirmBtn.addEventListener('click', () => {
+      this.onConfirm(feedback.trim());
+      this.close();
+    });
+  }
+}
+
 void RollbackModal;
 void ImagePathModal;
+void PlanFeedbackModal;
 
 export class CodexianView extends ItemView {
   private plugin: CodexianPlugin;
@@ -288,6 +335,7 @@ export class CodexianView extends ItemView {
   private inputEl: HTMLTextAreaElement | null = null;
   private sendButtonEl: HTMLButtonElement | null = null;
   private modeButtonEl: HTMLButtonElement | null = null;
+  private planModeButtonEl: HTMLButtonElement | null = null;
   private modelButtonEl: HTMLButtonElement | null = null;
   private reasoningButtonEl: HTMLButtonElement | null = null;
   private state: ChatState = { ...DEFAULT_CHAT_STATE };
@@ -299,6 +347,8 @@ export class CodexianView extends ItemView {
   private attachmentListEl: HTMLDivElement | null = null;
   private mentionOptions: string[] = [];
   private mentionSelectedIndex = 0;
+  private isPlanMode = false;
+  private lastPlanSignature: string | null = null;
   private pendingImageAttachments: PendingImageAttachment[] = [];
   private pendingApprovals = new Set<{
     resolve: (decision: ApprovalRequestDecision) => void;
@@ -387,6 +437,16 @@ export class CodexianView extends ItemView {
       this.openModeMenu(event);
     });
 
+    this.planModeButtonEl = toolbarBottomLeft.createEl('button', {
+      cls: 'codexian-action-btn codexian-plan-mode-btn',
+      attr: { type: 'button', 'aria-label': 'Toggle Plan Mode (Shift+Tab)' },
+      text: 'Plan mode off',
+    });
+    this.planModeButtonEl.addEventListener('click', () => {
+      this.togglePlanMode();
+    });
+    this.updatePlanModeButton();
+
     this.modelButtonEl = createIconButton(toolbarBottomLeft, 'cpu', {
       ariaLabel: 'Select model',
       className: 'codexian-action-btn codexian-icon-btn codexian-dropdown-btn',
@@ -427,6 +487,11 @@ export class CodexianView extends ItemView {
     });
 
     this.inputEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Tab' && event.shiftKey) {
+        event.preventDefault();
+        this.togglePlanMode();
+        return;
+      }
       if (this.handleMentionKeydown(event)) {
         return;
       }
@@ -621,17 +686,22 @@ export class CodexianView extends ItemView {
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 
-  private async handleSend(): Promise<void> {
+  private async handleSend(options?: { forcedPrompt?: string; bypassPlanMode?: boolean }): Promise<void> {
     if (!this.inputEl || !this.sendButtonEl) return;
     if (this.state.isRunning) return;
 
-    const prompt = this.inputEl.value.trim();
+    const forcedPrompt = options?.forcedPrompt;
+    const prompt = (forcedPrompt ?? this.inputEl.value).trim();
     if (!prompt) return;
     const imageAttachments = [...this.pendingImageAttachments];
     const imagePaths = imageAttachments.map((attachment) => attachment.path);
     this.hideMentionDropdown();
 
-    const packedPrompt = await this.buildPromptForSend(prompt);
+    const packedPromptBase = await this.buildPromptForSend(prompt);
+    const packedPrompt = buildPlanModePrompt(
+      packedPromptBase,
+      this.isPlanMode && !options?.bypassPlanMode
+    );
 
     const conversation = this.conversation ?? await this.conversationController.loadConversation();
     this.conversation = conversation;
@@ -660,9 +730,11 @@ export class CodexianView extends ItemView {
     this.appendMessage(assistantMessage);
     this.scrollToBottom();
 
-    this.inputEl.value = '';
-    this.pendingImageAttachments = [];
-    this.renderAttachmentList();
+    if (!forcedPrompt) {
+      this.inputEl.value = '';
+      this.pendingImageAttachments = [];
+      this.renderAttachmentList();
+    }
     this.state.isRunning = true;
     this.state.cancelRequested = false;
     this.state.activeTurnId = null;
@@ -713,6 +785,13 @@ export class CodexianView extends ItemView {
         },
         onItemCompleted: (item) => {
           this.itemCardRenderer?.handleItemCompleted(item);
+          if (item.type === 'plan') {
+            this.renderPlanUpdateCard(this.extractPlanPayloadFromItem(item));
+          }
+          this.scrollToBottom();
+        },
+        onPlanUpdated: (plan) => {
+          this.renderPlanUpdateCard(plan);
           this.scrollToBottom();
         },
         onError: (message) => {
@@ -778,6 +857,9 @@ export class CodexianView extends ItemView {
     }
     if (this.modeButtonEl) {
       this.modeButtonEl.disabled = this.state.isRunning;
+    }
+    if (this.planModeButtonEl) {
+      this.planModeButtonEl.disabled = this.state.isRunning;
     }
     if (this.modelButtonEl) {
       this.modelButtonEl.disabled = this.state.isRunning;
@@ -945,6 +1027,127 @@ export class CodexianView extends ItemView {
       mentionedFiles,
       limits: PROMPT_CONTEXT_LIMITS,
     });
+  }
+
+  private togglePlanMode(): void {
+    if (this.state.isRunning) {
+      return;
+    }
+    this.isPlanMode = !this.isPlanMode;
+    this.updatePlanModeButton();
+  }
+
+  private updatePlanModeButton(): void {
+    if (!this.planModeButtonEl) return;
+    this.planModeButtonEl.textContent = this.isPlanMode ? 'Plan mode on' : 'Plan mode off';
+    this.planModeButtonEl.classList.toggle('is-active', this.isPlanMode);
+  }
+
+  private extractPlanPayloadFromItem(item: AppServerItem): unknown {
+    if (!('raw' in item) || !isRecord(item.raw)) {
+      return null;
+    }
+    return item.raw.plan ?? item.raw;
+  }
+
+  private renderPlanUpdateCard(plan: unknown): void {
+    if (!this.messagesEl) return;
+
+    const signature = this.getPlanSignature(plan);
+    if (signature && signature === this.lastPlanSignature) {
+      return;
+    }
+    this.lastPlanSignature = signature;
+
+    const cardEl = this.messagesEl.createDiv({ cls: 'codexian-item-card codexian-plan-update-card' });
+    cardEl.dataset.itemType = 'plan-update';
+    cardEl.dataset.status = 'completed';
+
+    const headerEl = cardEl.createDiv({ cls: 'codexian-item-card-header' });
+    headerEl.createDiv({ cls: 'codexian-item-card-title', text: 'Plan update' });
+    headerEl.createDiv({ cls: 'codexian-item-card-status', text: 'Ready' });
+
+    const bodyEl = cardEl.createDiv({ cls: 'codexian-item-card-body codexian-plan-update-body' });
+    const planMarkdown = this.buildPlanMarkdown(plan);
+    void MarkdownRenderer.render(this.app, planMarkdown, bodyEl, '', this);
+
+    const actionsEl = cardEl.createDiv({ cls: 'codexian-plan-update-actions' });
+    const approveButton = actionsEl.createEl('button', {
+      text: 'Approve & execute',
+      attr: { type: 'button' },
+    });
+    const feedbackButton = actionsEl.createEl('button', {
+      text: 'Feedback',
+      attr: { type: 'button' },
+    });
+
+    approveButton.addEventListener('click', () => {
+      void this.handleSend({
+        forcedPrompt: 'Proceed with the approved plan',
+        bypassPlanMode: true,
+      });
+    });
+
+    feedbackButton.addEventListener('click', () => {
+      void (async () => {
+        const text = await this.collectPlanFeedbackFromModal();
+        if (!text) return;
+        await this.handleSend({
+          forcedPrompt: `Plan feedback:\n${text}`,
+          bypassPlanMode: true,
+        });
+      })();
+    });
+  }
+
+  private async collectPlanFeedbackFromModal(): Promise<string | null> {
+    return new Promise<string | null>((resolve) => {
+      const modal = new PlanFeedbackModal(this.plugin, (value) => {
+        resolve(value || null);
+      });
+      const originalOnClose = modal.onClose.bind(modal);
+      modal.onClose = (): void => {
+        originalOnClose();
+        resolve(null);
+      };
+      modal.open();
+    });
+  }
+
+  private buildPlanMarkdown(plan: unknown): string {
+    if (typeof plan === 'string' && plan.trim()) {
+      return plan;
+    }
+    if (!isRecord(plan)) {
+      return ['```json', JSON.stringify(plan ?? {}, null, 2), '```'].join('\n');
+    }
+
+    const text = getString(plan.markdown) ?? getString(plan.text) ?? getString(plan.summary);
+    if (text?.trim()) {
+      return text;
+    }
+
+    const steps = getArray(plan.steps)
+      .map((entry) => {
+        if (typeof entry === 'string') return entry;
+        if (!isRecord(entry)) return null;
+        return getString(entry.text) ?? getString(entry.title) ?? getString(entry.description) ?? null;
+      })
+      .filter((entry): entry is string => !!entry && entry.trim().length > 0);
+
+    if (steps.length > 0) {
+      return steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
+    }
+
+    return ['```json', JSON.stringify(plan, null, 2), '```'].join('\n');
+  }
+
+  private getPlanSignature(plan: unknown): string {
+    try {
+      return JSON.stringify(plan ?? null);
+    } catch {
+      return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
   }
 
   private renderAttachmentList(): void {

@@ -26,6 +26,7 @@ export interface CodexRunHandlers {
   onItemStarted?: (item: AppServerItem) => void;
   onCommandExecutionOutputDelta?: (delta: string, turnId: string) => void;
   onItemCompleted?: (item: AppServerItem) => void;
+  onPlanUpdated?: (plan: unknown, turnId: string) => void;
   onError: (message: string) => void;
   onComplete: () => void;
 }
@@ -743,6 +744,7 @@ export class CodexRuntime {
     const onItemStarted = handlers.onItemStarted ?? (() => undefined);
     const onCommandExecutionOutputDelta = handlers.onCommandExecutionOutputDelta ?? (() => undefined);
     const onItemCompleted = handlers.onItemCompleted ?? (() => undefined);
+    const onPlanUpdated = handlers.onPlanUpdated ?? (() => undefined);
     const handleNotification = (notification: JsonRpcNotification): void => {
       const { method, params } = notification;
       const paramsRecord = isRecord(params) ? params : undefined;
@@ -792,6 +794,13 @@ export class CodexRuntime {
         const item = parseAppServerItem(paramsRecord?.item);
         if (!item) return;
         onItemStarted(item);
+        return;
+      }
+
+      if (method === 'turn/plan/updated') {
+        const eventTurnId = getString(paramsRecord?.turnId);
+        if (eventTurnId !== turnId) return;
+        onPlanUpdated(paramsRecord?.plan, eventTurnId);
         return;
       }
 

@@ -274,6 +274,44 @@ describe('CodexRuntime', () => {
     fake.stdout.write(`${JSON.stringify({ id: 2, result: { turn: { id: 'turn-1' } } })}\n`);
     await expect(turnPromise).resolves.toBeUndefined();
   });
+
+  it('routes turn/plan/updated notifications to onPlanUpdated handler', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('safe'), '/vault');
+    const readyPromise = runtime.ensureReady();
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    const onPlanUpdated = jest.fn();
+    const onComplete = jest.fn();
+
+    const turnPromise = runtime.startTurn('thread-1', 'Plan first', {
+      onStart: () => undefined,
+      onDelta: () => undefined,
+      onMessage: () => undefined,
+      onPlanUpdated,
+      onError: () => undefined,
+      onComplete,
+    });
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'turn/start'));
+    fake.stdout.write(`${JSON.stringify({ id: 2, result: { turn: { id: 'turn-9' } } })}\n`);
+    await expect(turnPromise).resolves.toBeUndefined();
+
+    fake.stdout.write(
+      `${JSON.stringify({ method: 'turn/plan/updated', params: { turnId: 'turn-9', plan: { steps: ['a', 'b'] } } })}\n`
+    );
+
+    await waitFor(() => onPlanUpdated.mock.calls.length === 1);
+    expect(onPlanUpdated).toHaveBeenCalledWith({ steps: ['a', 'b'] }, 'turn-9');
+
+    fake.stdout.write(`${JSON.stringify({ method: 'turn/completed', params: { turn: { id: 'turn-9', status: 'completed' } } })}\n`);
+    await waitFor(() => onComplete.mock.calls.length === 1);
+  });
 });
 
 describe('buildTurnInputItems', () => {
