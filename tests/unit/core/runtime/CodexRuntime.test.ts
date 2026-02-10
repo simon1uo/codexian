@@ -275,6 +275,87 @@ describe('CodexRuntime', () => {
     await expect(turnPromise).resolves.toBeUndefined();
   });
 
+  it('lists skills from skills/list and keeps raw fields', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('safe'), '/vault');
+    const readyPromise = runtime.ensureReady();
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    const listPromise = runtime.listSkills();
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'skills/list'));
+
+    const request = parseClientMessages(fake.writes).find((entry) => entry.method === 'skills/list');
+    expect(request).toMatchObject({
+      id: 2,
+      method: 'skills/list',
+      params: { cwd: '/vault' },
+    });
+
+    fake.stdout.write(
+      `${JSON.stringify({
+        id: 2,
+        result: {
+          data: [
+            { name: 'planner', path: '/skills/planner', label: 'Plan helper' },
+            { name: '   ' },
+            { path: '/skills/missing-name' },
+          ],
+        },
+      })}\n`
+    );
+
+    await expect(listPromise).resolves.toEqual([
+      { name: 'planner', path: '/skills/planner', label: 'Plan helper' },
+    ]);
+  });
+
+  it('sends skill input item when a skill is selected', async () => {
+    const fake = createFakeChild();
+    mockSpawn.mockReturnValue(fake.child);
+
+    const runtime = new CodexRuntime(buildSettings('safe'), '/vault');
+    const readyPromise = runtime.ensureReady();
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'initialize'));
+    fake.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    await readyPromise;
+
+    const turnPromise = runtime.startTurn(
+      'thread-1',
+      '$planner Refine this plan',
+      {
+        onStart: () => undefined,
+        onDelta: () => undefined,
+        onMessage: () => undefined,
+        onError: () => undefined,
+        onComplete: () => undefined,
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      { name: ' planner ', path: ' /skills/planner ' }
+    );
+
+    await waitFor(() => parseClientMessages(fake.writes).some((entry) => entry.method === 'turn/start'));
+
+    const turnStartRequest = parseClientMessages(fake.writes).find((entry) => entry.method === 'turn/start');
+    const params = turnStartRequest?.params as { input?: unknown[] } | undefined;
+    expect(params?.input).toEqual([
+      { type: 'text', text: '$planner Refine this plan' },
+      { type: 'skill', name: 'planner', path: '/skills/planner' },
+    ]);
+
+    fake.stdout.write(`${JSON.stringify({ id: 2, result: { turn: { id: 'turn-2' } } })}\n`);
+    await expect(turnPromise).resolves.toBeUndefined();
+  });
+
   it('routes turn/plan/updated notifications to onPlanUpdated handler', async () => {
     const fake = createFakeChild();
     mockSpawn.mockReturnValue(fake.child);
@@ -388,6 +469,13 @@ describe('buildTurnInputItems', () => {
       { type: 'text', text: 'hello' },
       { type: 'localImage', path: '/tmp/a.png' },
       { type: 'localImage', path: '/tmp/b.jpg' },
+    ]);
+  });
+
+  it('builds text + skill item when a skill is provided', () => {
+    expect(buildTurnInputItems('$skill-name hello', [], { name: ' skill-name ', path: ' /skills/skill-name ' })).toEqual([
+      { type: 'text', text: '$skill-name hello' },
+      { type: 'skill', name: 'skill-name', path: '/skills/skill-name' },
     ]);
   });
 });

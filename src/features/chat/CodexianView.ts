@@ -5,7 +5,7 @@ import type { WorkspaceLeaf } from 'obsidian';
 import { ItemView, MarkdownRenderer, MarkdownView, Menu, Modal, Notice, Setting, TFile } from 'obsidian';
 
 import type CodexianPlugin from '../../main';
-import type { AppServerModel, ApprovalRequest, ApprovalRequestDecision } from '../../core/runtime';
+import type { AppServerModel, AppServerSkill, ApprovalRequest, ApprovalRequestDecision } from '../../core/runtime';
 import type {
   ApprovalDecision,
   ApprovalRule,
@@ -389,6 +389,7 @@ export class CodexianView extends ItemView {
   private modeButtonEl: HTMLButtonElement | null = null;
   private planModeButtonEl: HTMLButtonElement | null = null;
   private modelButtonEl: HTMLButtonElement | null = null;
+  private skillButtonEl: HTMLButtonElement | null = null;
   private reasoningButtonEl: HTMLButtonElement | null = null;
   private state: ChatState = { ...DEFAULT_CHAT_STATE };
   private models: AppServerModel[] = [];
@@ -415,6 +416,7 @@ export class CodexianView extends ItemView {
     resolve: (decision: ApprovalRequestDecision) => void;
     cardEl: HTMLElement;
   }>();
+  private selectedSkillsByConversation = new Map<string, AppServerSkill | null>();
 
   constructor(leaf: WorkspaceLeaf, plugin: CodexianPlugin) {
     super(leaf);
@@ -565,6 +567,15 @@ export class CodexianView extends ItemView {
     });
     this.modelButtonEl.addEventListener('click', (event) => {
       this.openModelMenu(event);
+    });
+
+    this.skillButtonEl = createIconButton(toolbarBottomLeft, 'book-key', {
+      ariaLabel: 'Select skill',
+      className: 'codexian-action-btn codexian-icon-btn codexian-dropdown-btn',
+      tooltip: 'Select skill',
+    });
+    this.skillButtonEl.addEventListener('click', (event) => {
+      void this.openSkillMenu(event);
     });
 
     this.reasoningButtonEl = createIconButton(toolbarBottomLeft, 'brain', {
@@ -814,6 +825,8 @@ export class CodexianView extends ItemView {
 
   private syncSelections(): void {
     this.normalizeEffortSelection();
+    this.ensureConversationSkillSelection();
+    this.updateSkillButtonState();
   }
 
   private setStatus(text: string, variant?: 'error' | 'running' | 'idle'): void {
@@ -851,8 +864,10 @@ export class CodexianView extends ItemView {
     this.hideSlashCommandDropdown();
 
     const packedPromptBase = await this.buildPromptForSend(promptWithReviewComments);
+    const selectedSkill = this.getSelectedSkill();
+    const promptWithSkill = selectedSkill ? `$${selectedSkill.name} ${packedPromptBase}` : packedPromptBase;
     const packedPrompt = buildPlanModePrompt(
-      packedPromptBase,
+      promptWithSkill,
       this.isPlanMode && !options?.bypassPlanMode
     );
 
@@ -897,9 +912,16 @@ export class CodexianView extends ItemView {
 
     try {
       if (!conversation.threadId) {
+        const previousSkillKey = this.getConversationSkillKey(conversation);
         const thread = await this.plugin.runtime.startThread();
         conversation.threadId = thread.id;
         conversation.id = thread.id;
+        const nextSkillKey = this.getConversationSkillKey(conversation);
+        if (previousSkillKey !== nextSkillKey && this.selectedSkillsByConversation.has(previousSkillKey)) {
+          const previousSkill = this.selectedSkillsByConversation.get(previousSkillKey) ?? null;
+          this.selectedSkillsByConversation.set(nextSkillKey, previousSkill);
+          this.selectedSkillsByConversation.delete(previousSkillKey);
+        }
         await this.plugin.saveConversation(conversation);
       }
       const threadId = conversation.threadId;
@@ -974,7 +996,7 @@ export class CodexianView extends ItemView {
           void this.cleanupTempAttachmentFiles(imageAttachments);
           void this.plugin.saveConversation(conversation);
         },
-      }, model, effort, approvalPolicy, sandboxPolicy, imagePaths);
+      }, model, effort, approvalPolicy, sandboxPolicy, imagePaths, selectedSkill ?? undefined);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error.';
       assistantMessage.content = `Error: ${message}`;
@@ -1033,9 +1055,56 @@ export class CodexianView extends ItemView {
     if (this.reasoningButtonEl) {
       this.reasoningButtonEl.disabled = this.state.isRunning;
     }
+    if (this.skillButtonEl) {
+      this.skillButtonEl.disabled = this.state.isRunning;
+    }
     if (this.steerButtonEl) {
       this.steerButtonEl.disabled = !this.state.isRunning;
     }
+  }
+
+  private getConversationSkillKey(conversation: CodexianConversation): string {
+    return conversation.threadId || conversation.id;
+  }
+
+  private ensureConversationSkillSelection(): void {
+    const conversation = this.conversation;
+    if (!conversation) {
+      return;
+    }
+    const key = this.getConversationSkillKey(conversation);
+    if (!this.selectedSkillsByConversation.has(key)) {
+      this.selectedSkillsByConversation.set(key, null);
+    }
+  }
+
+  private getSelectedSkill(): AppServerSkill | null {
+    const conversation = this.conversation;
+    if (!conversation) {
+      return null;
+    }
+    const key = this.getConversationSkillKey(conversation);
+    return this.selectedSkillsByConversation.get(key) ?? null;
+  }
+
+  private setSelectedSkill(skill: AppServerSkill | null): void {
+    const conversation = this.conversation;
+    if (!conversation) {
+      return;
+    }
+    const key = this.getConversationSkillKey(conversation);
+    this.selectedSkillsByConversation.set(key, skill);
+    this.updateSkillButtonState();
+  }
+
+  private updateSkillButtonState(): void {
+    if (!this.skillButtonEl) {
+      return;
+    }
+    const selectedSkill = this.getSelectedSkill();
+    const label = selectedSkill ? `Skill: ${selectedSkill.name}` : 'Select skill';
+    this.skillButtonEl.setAttribute('aria-label', label);
+    this.skillButtonEl.setAttribute('data-tooltip', label);
   }
 
   private handleMentionKeydown(event: KeyboardEvent): boolean {
@@ -1841,6 +1910,53 @@ export class CodexianView extends ItemView {
           });
         });
       }
+    }
+
+    menu.showAtMouseEvent(event);
+  }
+
+  private async openSkillMenu(event: MouseEvent): Promise<void> {
+    if (!this.conversation) return;
+
+    let skills: AppServerSkill[] = [];
+    try {
+      skills = await this.plugin.runtime.listSkills();
+    } catch {
+      skills = [];
+    }
+
+    const selected = this.getSelectedSkill();
+    const menu = new Menu();
+
+    if (selected) {
+      menu.addItem((item) => {
+        item.setTitle('No skill');
+        item.onClick(() => {
+          this.setSelectedSkill(null);
+        });
+      });
+    }
+
+    if (skills.length === 0) {
+      menu.addItem((item) => {
+        item.setTitle('No skills available');
+        item.setDisabled(true);
+      });
+      menu.showAtMouseEvent(event);
+      return;
+    }
+
+    for (const skill of skills) {
+      const title = skill.path ? `${skill.name} (${skill.path})` : skill.name;
+      menu.addItem((item) => {
+        item.setTitle(title);
+        if (selected && selected.name === skill.name && (selected.path ?? '') === (skill.path ?? '')) {
+          item.setChecked(true);
+        }
+        item.onClick(() => {
+          this.setSelectedSkill({ name: skill.name, path: skill.path });
+        });
+      });
     }
 
     menu.showAtMouseEvent(event);

@@ -41,6 +41,12 @@ export interface AppServerModel {
   defaultReasoningEffort?: string;
 }
 
+export interface AppServerSkill {
+  name: string;
+  path?: string;
+  [key: string]: unknown;
+}
+
 export type ApprovalRequestMethod =
   | 'item/commandExecution/requestApproval'
   | 'item/fileChange/requestApproval';
@@ -68,9 +74,24 @@ export interface TextInputItem {
   text: string;
 }
 
-export type TurnInputItem = TextInputItem | LocalImageInputItem;
+export interface SkillInputItem {
+  type: 'skill';
+  name: string;
+  path?: string;
+}
 
-export function buildTurnInputItems(prompt: string, localImagePaths: string[] = []): TurnInputItem[] {
+export interface StartTurnSkill {
+  name: string;
+  path?: string;
+}
+
+export type TurnInputItem = TextInputItem | LocalImageInputItem | SkillInputItem;
+
+export function buildTurnInputItems(
+  prompt: string,
+  localImagePaths: string[] = [],
+  skill?: StartTurnSkill
+): TurnInputItem[] {
   const input: TurnInputItem[] = [
     {
       type: 'text',
@@ -85,6 +106,19 @@ export function buildTurnInputItems(prompt: string, localImagePaths: string[] = 
       type: 'localImage',
       path: imagePath,
     });
+  }
+
+  const skillName = skill?.name?.trim();
+  if (skillName) {
+    const skillItem: SkillInputItem = {
+      type: 'skill',
+      name: skillName,
+    };
+    const skillPath = skill?.path?.trim();
+    if (skillPath) {
+      skillItem.path = skillPath;
+    }
+    input.push(skillItem);
   }
 
   return input;
@@ -236,6 +270,28 @@ const extractThreadList = (value: unknown): AppServerThread[] => {
   const container = isRecord(value) ? value : undefined;
   const list = container ? getArray(container.data) : getArray(value);
   return list.map((entry) => parseThread(entry)).filter((entry): entry is AppServerThread => !!entry);
+};
+
+const parseSkill = (value: unknown): AppServerSkill | null => {
+  if (!isRecord(value)) return null;
+  const name = getString(value.name)?.trim();
+  if (!name) return null;
+  const pathValue = getString(value.path)?.trim();
+  return {
+    ...value,
+    name,
+    path: pathValue || undefined,
+  };
+};
+
+const extractSkillList = (value: unknown): AppServerSkill[] => {
+  const container = isRecord(value) ? value : undefined;
+  const list = container
+    ? getArray(container.data).length > 0
+      ? getArray(container.data)
+      : getArray(container.skills)
+    : getArray(value);
+  return list.map((entry) => parseSkill(entry)).filter((entry): entry is AppServerSkill => !!entry);
 };
 
 export function expandHomePath(input: string): string {
@@ -727,6 +783,15 @@ export class CodexRuntime {
     return [];
   }
 
+  async listSkills(): Promise<AppServerSkill[]> {
+    await this.ensureReady();
+    const client = this.getClient();
+    const result = await client.sendRequest('skills/list', {
+      cwd: this.vaultPath || undefined,
+    });
+    return extractSkillList(result);
+  }
+
   async startTurn(
     threadId: string,
     prompt: string,
@@ -735,7 +800,8 @@ export class CodexRuntime {
     reasoningEffort?: string,
     approvalPolicy?: ApprovalPolicy,
     sandboxPolicy?: SandboxPolicy,
-    localImagePaths: string[] = []
+    localImagePaths: string[] = [],
+    skill?: StartTurnSkill
   ): Promise<void> {
     await this.ensureReady();
     const client = this.getClient();
@@ -835,7 +901,7 @@ export class CodexRuntime {
     try {
       const response = await client.sendRequest('turn/start', {
         threadId,
-        input: buildTurnInputItems(prompt, localImagePaths),
+        input: buildTurnInputItems(prompt, localImagePaths, skill),
         model: model || undefined,
         effort: reasoningEffort || undefined,
         approvalPolicy: approvalPolicy || undefined,
